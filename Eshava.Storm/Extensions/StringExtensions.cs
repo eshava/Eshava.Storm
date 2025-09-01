@@ -109,7 +109,7 @@ namespace Eshava.Storm.Extensions
 				var innerTableAliases = new Dictionary<string, IList<string>>();
 				ExecuteTableRegEx(queryMatches, secondGroupIndex, innerTableAliases);
 
-				var alias = match.Groups[queryAliasGroup].Value.CleanTableName();
+				var alias = match.Groups[queryAliasGroup].Value.CleanTableAlias();
 				if (innerTableAliases.Count == 0)
 				{
 					tableAliases.Add(alias, new List<string> { "*" });
@@ -125,8 +125,8 @@ namespace Eshava.Storm.Extensions
 		{
 			foreach (Match match in matches)
 			{
-				var tableName = match.Groups["table"].Value.CleanTableName();
-				var alias = match.Groups["tablealias"].Value.CleanTableName();
+				(var tableSchema, var tableName) = match.Groups["table"].Value.CleanTableName();
+				var alias = match.Groups["tablealias"].Value.CleanTableAlias();
 
 				if (alias.IsNullOrEmpty())
 				{
@@ -135,12 +135,25 @@ namespace Eshava.Storm.Extensions
 
 				if (!tableAliases.ContainsKey(alias))
 				{
-					tableAliases.Add(alias, new List<string> { tableName });
+					tableAliases.Add(alias, new List<string> { $"{tableSchema}.{tableName}" });
 				}
 			}
 		}
 
-		internal static string CleanTableName(this string tableName)
+		internal static (string Schema, string Table) CleanTableName(this string tableName)
+		{
+			var tableParts = tableName.ToLower()
+				.Replace("[", "")
+				.Replace("]", "")
+				.Trim()
+				.Split('.');
+
+			return tableParts.Length == 1
+				? ("dbo", tableParts[0])
+				: (tableParts[tableParts.Length - 2], tableParts[tableParts.Length - 1]);
+		}
+
+		internal static string CleanTableAlias(this string tableName)
 		{
 			return tableName
 				.ToLower()

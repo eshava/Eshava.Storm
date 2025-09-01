@@ -368,7 +368,7 @@ namespace Eshava.Storm
 			var tableAliases = new List<(string Alias, IList<string> TableNames)>();
 			foreach (var alias in tableAlias.Split(','))
 			{
-				var tableAliasName = alias.Trim().CleanTableName();
+				var tableAliasName = alias.Trim().CleanTableAlias();
 
 				if (_tableAnalysisResult.TableAliases.ContainsKey(tableAliasName))
 				{
@@ -458,12 +458,12 @@ namespace Eshava.Storm
 					{
 						if (!Settings.IgnoreDuplicatedColumns)
 						{
-							columnCache[columnName].Add(new ColumnCacheItem(columnOrdinal, Type.GetType(_reader.GetDataTypeName(columnOrdinal)), columnName, "*"));
+							columnCache[columnName].Add(new ColumnCacheItem(columnOrdinal, Type.GetType(_reader.GetDataTypeName(columnOrdinal)), columnName, "*", "dbo"));
 						}
 					}
 					else
 					{
-						columnCache.Add(columnName, [new ColumnCacheItem(columnOrdinal, Type.GetType(_reader.GetDataTypeName(columnOrdinal)), columnName, "*")]);
+						columnCache.Add(columnName, [new ColumnCacheItem(columnOrdinal, Type.GetType(_reader.GetDataTypeName(columnOrdinal)), columnName, "*", "dbo")]);
 						columnDataTypeCache.Add(columnName, []);
 					}
 				}
@@ -484,8 +484,14 @@ namespace Eshava.Storm
 							}
 
 							var isExpression = Convert.ToBoolean(row["IsExpression"]);
+							var schemaName = row["BaseSchemaName"]?.ToString();
 							var tableName = row["BaseTableName"]?.ToString();
 							var columnName = row["ColumnName"]?.ToString();
+
+							if (schemaName.IsNullOrEmpty())
+							{
+								schemaName = "dbo";
+							}
 
 							if (tableName.IsNullOrEmpty())
 							{
@@ -500,15 +506,15 @@ namespace Eshava.Storm
 							tableName = tableName.ToLower();
 							columnName = columnName.ToLower();
 
-							var name = $"{tableName}.{columnName}";
+							var name = $"{schemaName}.{tableName}.{columnName}";
 
 							if (columnCache.ContainsKey(name))
 							{
-								columnCache[name].Add(new ColumnCacheItem(columnOrdinal, columnDataType, columnName, tableName));
+								columnCache[name].Add(new ColumnCacheItem(columnOrdinal, columnDataType, columnName, tableName, schemaName));
 							}
 							else
 							{
-								columnCache.Add(name, [new ColumnCacheItem(columnOrdinal, columnDataType, columnName, tableName)]);
+								columnCache.Add(name, [new ColumnCacheItem(columnOrdinal, columnDataType, columnName, tableName, schemaName)]);
 							}
 
 							break;
@@ -517,10 +523,13 @@ namespace Eshava.Storm
 
 					foreach (DataRow row in _schemaTable.Rows)
 					{
+						var schemaName = row["BaseSchemaName"]?.ToString() ?? "dbo";
 						var baseTableName = row["BaseTableName"].ToString();
-						if (!resultTableNames.Contains(baseTableName))
+						var schemaAndTable = $"{schemaName}.{baseTableName}";
+
+						if (!resultTableNames.Contains(schemaAndTable))
 						{
-							resultTableNames.Add(baseTableName);
+							resultTableNames.Add(schemaAndTable);
 						}
 					}
 				}
@@ -537,7 +546,7 @@ namespace Eshava.Storm
 					}
 
 					var tableAlias = _tableAnalysisResult.TableAliases
-						.Where(alias => alias.Value.Contains(firstOccurrence.TableName))
+						.Where(alias => alias.Value.Contains($"{firstOccurrence.SchemaName}.{firstOccurrence.TableName}"))
 						.Select(alias => alias.Key)
 						.ToList();
 
@@ -556,7 +565,6 @@ namespace Eshava.Storm
 
 						item.Value[columnIndex].TableAlias = collumnOccurrences[columnIndex].Alias;
 					}
-
 				}
 			}
 
