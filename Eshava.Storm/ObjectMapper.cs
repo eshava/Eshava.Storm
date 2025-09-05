@@ -503,6 +503,7 @@ namespace Eshava.Storm
 								columnName = "none";
 							}
 
+							schemaName = schemaName.ToLower();
 							tableName = tableName.ToLower();
 							columnName = columnName.ToLower();
 
@@ -537,6 +538,14 @@ namespace Eshava.Storm
 
 			if (!Settings.EnableValueReadingBasedOnTableAliasOccurrence && !_tableAnalysisResult.SqlQuery.IsNullOrEmpty())
 			{
+				var indexOfFrom = _tableAnalysisResult.SqlQuery
+					.LastIndexOf(" from ");
+
+				var preparedQuery = _tableAnalysisResult.SqlQuery
+					.Substring(0, indexOfFrom)
+					.Replace("[", "")
+					.Replace("]", "");
+
 				foreach (var item in columnCache)
 				{
 					var firstOccurrence = item.Value[0];
@@ -551,7 +560,7 @@ namespace Eshava.Storm
 						.ToList();
 
 					var collumnOccurrences = tableAlias
-						.Select(alias => (Alias: alias, Index: IndexOf(_tableAnalysisResult.SqlQuery, alias, firstOccurrence.ColumnName)))
+						.Select(alias => (Alias: alias, Index: IndexOf(preparedQuery, alias, firstOccurrence.ColumnName)))
 						.Where(occurence => occurence.Index >= 0)
 						.OrderBy(occurence => occurence.Index)
 						.ToList();
@@ -574,10 +583,19 @@ namespace Eshava.Storm
 
 		private static int IndexOf(string sql, string tableAlias, string columnName)
 		{
-			var indexWithSpace = sql.IndexOf($"{tableAlias}.{columnName} ");
-			var indexWithComma = sql.IndexOf($"{tableAlias}.{columnName},");
+			var columnNames = new[]{
+				$" {tableAlias}.{columnName} ",
+				$" {tableAlias}.{columnName},",
+				$",{tableAlias}.{columnName} ",
+				$",{tableAlias}.*",
+				$" {tableAlias}.*"
+			};
 
-			return Math.Max(indexWithSpace, indexWithComma);
+			var index = columnNames
+				.Select(c => sql.IndexOf(c))
+				.Max();
+
+			return index;
 		}
 
 		private bool ShouldMapClass<T>()
