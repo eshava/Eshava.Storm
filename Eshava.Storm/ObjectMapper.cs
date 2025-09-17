@@ -334,9 +334,18 @@ namespace Eshava.Storm
 					continue;
 				}
 
+				var columnCacheItem = _tableAnalysisResult.ColumnCache[fullColumnName][aliasOccurrence];
+				if (!columnCacheItem.TableAlias.IsNullOrEmpty() 
+					&& !requestedTableName.Alias.IsNullOrEmpty() 
+					&& columnCacheItem.TableAlias != requestedTableName.Alias
+				)
+				{
+					continue;
+				}
+
 				information.ReaderAccessItems.Add(new ReaderAccessItem
 				{
-					Ordinal = _tableAnalysisResult.ColumnCache[fullColumnName][aliasOccurrence].Ordinal,
+					Ordinal = columnCacheItem.Ordinal,
 					Instance = information.Instance,
 					PropertyInfo = property?.PropertyInfo
 				});
@@ -487,6 +496,12 @@ namespace Eshava.Storm
 							var schemaName = row["BaseSchemaName"]?.ToString();
 							var tableName = row["BaseTableName"]?.ToString();
 							var columnName = row["ColumnName"]?.ToString();
+							var isHidden = Convert.ToBoolean(row["IsHidden"]?.ToString() ?? "0");
+
+							if (isHidden)
+							{
+								continue;
+							}
 
 							if (schemaName.IsNullOrEmpty())
 							{
@@ -539,7 +554,7 @@ namespace Eshava.Storm
 			if (!Settings.EnableValueReadingBasedOnTableAliasOccurrence && !_tableAnalysisResult.SqlQuery.IsNullOrEmpty())
 			{
 				var indexOfFrom = _tableAnalysisResult.SqlQuery
-					.LastIndexOf(" from ");
+					.IndexOf(" from ");
 
 				var preparedQuery = _tableAnalysisResult.SqlQuery
 					.Substring(0, indexOfFrom)
