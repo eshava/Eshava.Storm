@@ -316,6 +316,10 @@ namespace Eshava.Storm.Linq.Engines
 			{
 				return ProcessMethodCallExpressionToLower(methodCallExpression, data);
 			}
+			else if (methodCallExpression.Object is null)
+			{
+				return ProcessExpression(methodCallExpression.Arguments.First(), data, methodCallExpression.NodeType);
+			}
 			else
 			{
 				rawProperty = ProcessExpression(methodCallExpression.Object, data, methodCallExpression.NodeType);
