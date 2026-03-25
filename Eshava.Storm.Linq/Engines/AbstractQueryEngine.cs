@@ -302,11 +302,11 @@ namespace Eshava.Storm.Linq.Engines
 				return ProcessMethodCallExpressionAny(methodCallExpression, data);
 			}
 
-			if (method == METHOD_CONTAINS && methodCallExpression.Arguments.Count == 2)
+			if (method == METHOD_CONTAINS && methodCallExpression.Arguments.Count >= 2)
 			{
 				//DisplayClass
-				rawProperty = ProcessExpression(methodCallExpression.Arguments.First(), data, methodCallExpression.NodeType);
-				value = ProcessExpression(methodCallExpression.Arguments.Last(), data, methodCallExpression.NodeType);
+				rawProperty = ProcessExpression(methodCallExpression.Arguments[0], data, methodCallExpression.NodeType);
+				value = ProcessExpression(methodCallExpression.Arguments[1], data, methodCallExpression.NodeType);
 			}
 			else if (method == METHOD_TOUPPER)
 			{
@@ -318,12 +318,12 @@ namespace Eshava.Storm.Linq.Engines
 			}
 			else if (methodCallExpression.Object is null)
 			{
-				return ProcessExpression(methodCallExpression.Arguments.First(), data, methodCallExpression.NodeType);
+				return ProcessExpression(methodCallExpression.Arguments[0], data, methodCallExpression.NodeType);
 			}
 			else
 			{
 				rawProperty = ProcessExpression(methodCallExpression.Object, data, methodCallExpression.NodeType);
-				value = ProcessExpression(methodCallExpression.Arguments.First(), data, methodCallExpression.NodeType);
+				value = ProcessExpression(methodCallExpression.Arguments[0], data, methodCallExpression.NodeType);
 			}
 
 			var property = "";

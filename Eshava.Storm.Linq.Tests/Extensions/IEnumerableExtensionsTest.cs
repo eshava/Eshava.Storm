@@ -554,6 +554,27 @@ namespace Eshava.Storm.Linq.Tests.Extensions
 		}
 
 		[TestMethod]
+		public void CalculateWhereConditionsContainedInListStringToLowerTest()
+		{
+			// Arrange
+			var values = new List<string> { "alpha", "beta" };
+			var queryConditions = new List<Expression<Func<Alpha, bool>>>
+			{
+				alpha => values.Contains(alpha.Gamma.ToLower())
+			};
+
+			// Act
+			var result = queryConditions.CalculateWhereConditions();
+
+			// Assert
+			result.QueryParameter.Should().HaveCount(1);
+			result.QueryParameter.Keys.First().Should().Be("p0Array");
+			result.QueryParameter.Values.First().Should().BeOfType(typeof(List<string>));
+
+			result.Sql.Should().Be("Gamma IN @p0Array" + Environment.NewLine);
+		}
+
+		[TestMethod]
 		public void CalculateWhereConditionsAnyEqualTest()
 		{
 			// Arrange
