@@ -159,6 +159,7 @@ namespace Eshava.Storm.Engines
 					&& !(
 							param is string
 							|| param is IEnumerable<KeyValuePair<string, object>>
+							|| param is IDictionary
 						)
 					)
 				? (IEnumerable)param

@@ -99,6 +99,20 @@ namespace Eshava.Storm.Tests
 		}
 
 		[TestMethod]
+		public async Task DictionaryWithTypedValuesTest()
+		{
+			// Arrange
+			using var connection = await CreateDatabaseAsync();
+			var parameters = new Dictionary<string, int> { { "Id", 2 } };
+
+			// Act
+			var name = await connection.ExecuteScalarAsync<string>("SELECT Name FROM Items WHERE Id = @Id", parameters);
+
+			// Assert
+			name.Should().Be("two");
+		}
+
+		[TestMethod]
 		public async Task HandlerParameterIsNotSqlVariantTest()
 		{
 			// Arrange

@@ -68,6 +68,17 @@ namespace Eshava.Storm
 				return;
 			}
 
+			// A dictionary with values of any type, such as Dictionary<string, int>
+			if (parameter is IDictionary untypedDictionary)
+			{
+				foreach (DictionaryEntry entry in untypedDictionary)
+				{
+					Add(entry.Key.ToString(), entry.Value, null, null, null);
+				}
+
+				return;
+			}
+
 			var parameterPropertyInfos = parameter.GetType().GetProperties();
 			foreach (var propertyInfo in parameterPropertyInfos)
 			{

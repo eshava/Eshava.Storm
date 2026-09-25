@@ -182,3 +182,6 @@ are not documented here — the Git history is the source for those.
   were in `INSERT` and `SET`. A key column named with a reserved word, `[Column("Order")]`, could be
   inserted but not updated, deleted or read. Parameter names are taken from property names, so a
   column name with a blank no longer produces an invalid parameter.
+* **A dictionary with values of another type than `object`**, such as `Dictionary<string, int>`, can be
+  passed as parameters. It was taken for a list of parameter sets and refused with *An enumerable
+  sequence of parameters is not allowed in this context*.
