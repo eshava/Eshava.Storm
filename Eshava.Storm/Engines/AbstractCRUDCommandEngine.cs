@@ -26,7 +26,7 @@ namespace Eshava.Storm.Engines
 		{
 			var type = CheckCommandConditions(commandDefinition, "insert");
 
-			var entityTypeResult = EntityCache.GetEntity(type) ?? TypeAnalyzer.AnalyzeType(type);
+			var entityTypeResult = TypeAnalyzer.GetOrAnalyzeEntity(type);
 			if (!entityTypeResult.HasPrimaryKey())
 			{
 				throw new ArgumentException("At least one key column property must be defined.");
@@ -98,7 +98,7 @@ namespace Eshava.Storm.Engines
 		{
 			var type = CheckCommandConditions(commandDefinition, "update", partialEntity, patchProperties);
 
-			var entityTypeResult = EntityCache.GetEntity(type) ?? TypeAnalyzer.AnalyzeType(type);
+			var entityTypeResult = TypeAnalyzer.GetOrAnalyzeEntity(type);
 			var keyColumns = GetKeyColumns(type, partialEntity?.GetType(), patchProperties?.Select(p => p.Key).ToList());
 
 			if (!keyColumns.Any())
@@ -187,7 +187,7 @@ namespace Eshava.Storm.Engines
 		public virtual void ProcessDeleteRequest<T>(CommandDefinition<T> commandDefinition) where T : class
 		{
 			var type = CheckCommandConditions(commandDefinition, "delete");
-			var entityTypeResult = EntityCache.GetEntity(type) ?? TypeAnalyzer.AnalyzeType(type);
+			var entityTypeResult = TypeAnalyzer.GetOrAnalyzeEntity(type);
 			var keyColumns = GetKeyColumns(type);
 
 			if (!keyColumns.Any())
@@ -291,7 +291,7 @@ namespace Eshava.Storm.Engines
 
 		protected IEnumerable<KeyProperty> GetKeyColumns(Type type, Type partialType = null, IEnumerable<string> patchProperties = null)
 		{
-			var entityTypeResult = MetaData.Models.EntityCache.GetEntity(type) ?? MetaData.TypeAnalyzer.AnalyzeType(type);
+			var entityTypeResult = MetaData.TypeAnalyzer.GetOrAnalyzeEntity(type);
 
 			var keyColumns = new List<KeyProperty>();
 			var partialPropertyInfos = partialType?.GetProperties().Where(p => p.CanRead).ToList();
@@ -348,7 +348,7 @@ namespace Eshava.Storm.Engines
 
 		protected IEnumerable<Models.Property> GetProperties(PropertyRequest request)
 		{
-			request.EntityTypeResult = request.EntityTypeResult ?? MetaData.Models.EntityCache.GetEntity(request.Type) ?? MetaData.TypeAnalyzer.AnalyzeType(request.Type);
+			request.EntityTypeResult = request.EntityTypeResult ?? MetaData.TypeAnalyzer.GetOrAnalyzeEntity(request.Type);
 			var properties = new List<Models.Property>();
 			var propertyInfosPartial = request.PartialEntity?.GetType().GetProperties().Where(p => p.CanRead).ToList();
 
@@ -387,6 +387,8 @@ namespace Eshava.Storm.Engines
 							Prefix = request.NamePrefix,
 							PropertyInfo = property.PropertyInfo,
 							Entity = request.Entity,
+							// A simple type can have a handler as well, the bulk insert has to apply it like a parameter does
+							TypeHandler = TypeHandlerMap.Map.TryGetValue(property.Type.GetDataType(), out var typeHandler) ? typeHandler : null,
 							ColumnName = property.ColumnName
 						});
 					}

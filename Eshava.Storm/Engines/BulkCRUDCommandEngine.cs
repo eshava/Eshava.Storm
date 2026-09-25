@@ -20,7 +20,7 @@ namespace Eshava.Storm.Engines
 		public async Task BulkInsertAsync<T>(BulkCommandDefinition<T> commandDefinition) where T : class
 		{
 			var type = CheckCommandConditions(commandDefinition.Entities, "insert");
-			var entityTypeResult = MetaData.Models.EntityCache.GetEntity(type) ?? MetaData.TypeAnalyzer.AnalyzeType(type);
+			var entityTypeResult = MetaData.TypeAnalyzer.GetOrAnalyzeEntity(type);
 
 			if (!entityTypeResult.HasPrimaryKey())
 			{
@@ -123,6 +123,11 @@ namespace Eshava.Storm.Engines
 					if (property.TypeHandler?.GetType().ImplementsInterface(_ibulkInsertTypeHandler) ?? false)
 					{
 						propertyType = ((IBulkInsertTypeHandler)property.TypeHandler).GetDateType();
+					}
+					else if (property.TypeHandler != default)
+					{
+						// The handler decides the value, and with it its type
+						propertyType = typeof(object);
 					}
 
 					dataTable.Columns.Add(new DataColumn(columnName, propertyType));

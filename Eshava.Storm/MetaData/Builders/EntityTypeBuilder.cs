@@ -15,13 +15,11 @@ namespace Eshava.Storm.MetaData.Builders
 		{
 			var type = typeof(TEntity);
 
-			_entity = EntityCache.GetEntity(type);
-			if (_entity == default)
-			{
-				_entity = new Entity(type, ConfigurationSource.Explicit);
-				EntityCache.AddEntity(_entity);
-			}
+			// A new entity is published by the type analyzer once the configuration is applied and the analysis is complete
+			_entity = EntityCache.GetEntity(type) ?? new Entity(type, ConfigurationSource.Explicit);
 		}
+
+		internal Entity Entity => _entity;
 
 		public EntityTypeBuilder<TEntity> ToTable(string tableName, string schema = null)
 		{

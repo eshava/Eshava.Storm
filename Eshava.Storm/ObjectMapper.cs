@@ -195,16 +195,7 @@ namespace Eshava.Storm
 
 		private object CreateEmptyInstance(Type type)
 		{
-			var entity = EntityCache.GetEntity(type);
-			if (entity == null)
-			{
-				if (Settings.RestrictToRegisteredModels)
-				{
-					throw new ArgumentException($"The given type is not analyzed. Engine is restricted to analyzed type. Use {nameof(TypeAnalyzer)}.{nameof(TypeAnalyzer.AddType)}<>().");
-				}
-
-				entity = TypeAnalyzer.AnalyzeType(type);
-			}
+			var entity = TypeAnalyzer.GetOrAnalyzeEntity(type);
 
 			var instance = Activator.CreateInstance(type);
 
@@ -221,16 +212,7 @@ namespace Eshava.Storm
 
 		private void PreProcessProperties(PreProcessPropertyInformation information)
 		{
-			information.Entity ??= EntityCache.GetEntity(information.Instance.GetType());
-			if (information.Entity == null)
-			{
-				if (Settings.RestrictToRegisteredModels)
-				{
-					throw new ArgumentException($"The given type is not analyzed. Engine is restricted to analyzed type. Use {nameof(TypeAnalyzer)}.{nameof(TypeAnalyzer.AddType)}<>().");
-				}
-
-				information.Entity = TypeAnalyzer.AnalyzeType(information.Instance.GetType());
-			}
+			information.Entity ??= TypeAnalyzer.GetOrAnalyzeEntity(information.Instance.GetType());
 
 			foreach (var property in information.Entity.GetProperties())
 			{
@@ -496,7 +478,8 @@ namespace Eshava.Storm
 							var schemaName = row["BaseSchemaName"]?.ToString();
 							var tableName = row["BaseTableName"]?.ToString();
 							var columnName = row["ColumnName"]?.ToString();
-							var isHidden = Convert.ToBoolean(row["IsHidden"]?.ToString() ?? "0");
+							// Not every provider reports hidden columns, SQLite for one has no such column in its schema table
+							var isHidden = _schemaTable.Columns.Contains("IsHidden") && row["IsHidden"] is bool hidden && hidden;
 
 							if (isHidden)
 							{
@@ -650,13 +633,13 @@ namespace Eshava.Storm
 
 			if (TypeHandlerMap.Map.ContainsKey(type))
 			{
-				return GetValueByTypeHandler(type, TypeHandlerMap.Map[type], ordinal);
+				return GetValueByTypeHandler(TypeHandlerMap.Map[type], ordinal);
 			}
 
 			return _reader[ordinal];
 		}
 
-		private object GetValueByTypeHandler(Type type, ITypeHandler typeHandler, int ordinal)
+		private object GetValueByTypeHandler(ITypeHandler typeHandler, int ordinal)
 		{
 			if (!typeHandler.ReadAsByteArray)
 			{
@@ -672,7 +655,8 @@ namespace Eshava.Storm
 			var result = new byte[size];
 			_reader.GetBytes(ordinal, 0, result, 0, result.Length);
 
-			return typeHandler.Parse(type, result);
+			// Only read here: the handler parses the bytes once, in the data type mapper
+			return result;
 		}
 	}
 }

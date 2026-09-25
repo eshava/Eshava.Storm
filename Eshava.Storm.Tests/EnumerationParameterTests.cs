@@ -1,15 +1,20 @@
 ﻿using System;
 using System.Data;
 using System.Globalization;
+using System.Linq;
 using System.Threading.Tasks;
 using Eshava.Storm.Extensions;
 using Eshava.Storm.Handler;
+using Eshava.Storm.Tests.Infrastructure;
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Eshava.Storm.Tests
 {
+	/// <summary>
+	/// Type handlers are registered process wide. The handler for DateTime registered here applies to every test
+	/// in this assembly, so no other test may read or write DateTime values.
+	/// </summary>
 	[TestClass]
 	public sealed class EnumerationParameterTests
 	{
@@ -20,7 +25,7 @@ namespace Eshava.Storm.Tests
 		[ClassInitialize]
 		public static void ClassInitialize(TestContext context)
 		{
-			new ByteArrayTypeHandler().AddTypeHandler();
+			new FingerprintTypeHandler().AddTypeHandler();
 			new DateAsTextTypeHandler().AddTypeHandler();
 		}
 
@@ -28,9 +33,21 @@ namespace Eshava.Storm.Tests
 		public async Task EnumerationOfTypeWithHandlerTest()
 		{
 			// Arrange
-			using var connection = await CreateConnectionAsync();
-			await connection.ExecuteAsync("CREATE TABLE Items (Id INTEGER NOT NULL, Fingerprint BLOB NOT NULL)");
-			await connection.ExecuteAsync("INSERT INTO Items (Id, Fingerprint) VALUES (1, @A), (2, @B), (3, @C)", new { A = _hashA, B = _hashB, C = _hashC });
+			using var connection = await CreateFingerprintDatabaseAsync();
+			var fingerprints = new[] { new Fingerprint(_hashA), new Fingerprint(_hashC) };
+
+			// Act
+			var count = await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM Items WHERE Fingerprint IN @Fingerprints", new { Fingerprints = fingerprints });
+
+			// Assert
+			count.Should().Be(2);
+		}
+
+		[TestMethod]
+		public async Task EnumerationOfByteArraysWithoutHandlerTest()
+		{
+			// Arrange
+			using var connection = await CreateFingerprintDatabaseAsync();
 
 			// Act
 			var count = await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM Items WHERE Fingerprint IN @Fingerprints", new { Fingerprints = new[] { _hashA, _hashC } });
@@ -40,12 +57,26 @@ namespace Eshava.Storm.Tests
 		}
 
 		[TestMethod]
+		public async Task ByteArrayWithoutHandlerIsOneBinaryParameterTest()
+		{
+			// Arrange
+			using var connection = await CreateFingerprintDatabaseAsync();
+
+			// Act
+			var id = await connection.ExecuteScalarAsync<long>("SELECT Id FROM Items WHERE Fingerprint = @Fingerprint", new { Fingerprint = _hashB });
+
+			// Assert
+			id.Should().Be(2);
+		}
+
+		[TestMethod]
 		public async Task EnumerationOfTypeWithoutHandlerTest()
 		{
 			// Arrange
-			using var connection = await CreateConnectionAsync();
-			await connection.ExecuteAsync("CREATE TABLE Items (Id INTEGER NOT NULL)");
-			await connection.ExecuteAsync("INSERT INTO Items (Id) VALUES (1), (2), (3)");
+			using var connection = await SqliteDatabase.OpenAsync(
+				"CREATE TABLE Items (Id INTEGER NOT NULL)",
+				"INSERT INTO Items (Id) VALUES (1), (2), (3)"
+			);
 
 			// Act
 			var count = await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM Items WHERE Id IN @Ids", new { Ids = new[] { 1, 3 } });
@@ -55,11 +86,27 @@ namespace Eshava.Storm.Tests
 		}
 
 		[TestMethod]
+		public async Task EnumerationOfNullableEnumTest()
+		{
+			// Arrange
+			using var connection = await SqliteDatabase.OpenAsync(
+				"CREATE TABLE Items (Id INTEGER NOT NULL, Colour INTEGER NULL)",
+				"INSERT INTO Items (Id, Colour) VALUES (1, 1), (2, 2), (3, 3)"
+			);
+			var colours = new Colour?[] { Colour.Red, Colour.Blue };
+
+			// Act
+			var count = await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM Items WHERE Colour IN @Colours", new { Colours = colours });
+
+			// Assert
+			count.Should().Be(2);
+		}
+
+		[TestMethod]
 		public async Task EnumerationOfDateTimeWithHandlerTest()
 		{
 			// Arrange
-			using var connection = await CreateConnectionAsync();
-			await CreateDateTableAsync(connection);
+			using var connection = await CreateDateDatabaseAsync();
 
 			// The times differ from the stored dates, so only a value set through the handler can match
 			var days = new[] { new DateTime(2026, 9, 1, 8, 15, 0), new DateTime(2026, 9, 3, 17, 45, 0) };
@@ -75,8 +122,7 @@ namespace Eshava.Storm.Tests
 		public async Task EnumerationOfNullableDateTimeWithNullElementTest()
 		{
 			// Arrange
-			using var connection = await CreateConnectionAsync();
-			await CreateDateTableAsync(connection);
+			using var connection = await CreateDateDatabaseAsync();
 
 			var days = new DateTime?[] { new DateTime(2026, 9, 2, 12, 0, 0), null };
 
@@ -87,32 +133,50 @@ namespace Eshava.Storm.Tests
 			count.Should().Be(1);
 		}
 
-		private static async Task<SqliteConnection> CreateConnectionAsync()
+		private static Task<Microsoft.Data.Sqlite.SqliteConnection> CreateFingerprintDatabaseAsync()
 		{
-			// An in-memory database lives as long as its connection, so it is opened here and kept open
-			var connection = new SqliteConnection("Data Source=:memory:");
-			await connection.OpenAsync();
-
-			return connection;
+			return SqliteDatabase.OpenAsync(
+				"CREATE TABLE Items (Id INTEGER NOT NULL, Fingerprint BLOB NOT NULL)",
+				"INSERT INTO Items (Id, Fingerprint) VALUES (1, X'010203'), (2, X'040506'), (3, X'070809')"
+			);
 		}
 
-		private static async Task CreateDateTableAsync(SqliteConnection connection)
+		private static Task<Microsoft.Data.Sqlite.SqliteConnection> CreateDateDatabaseAsync()
 		{
-			await connection.ExecuteAsync("CREATE TABLE Items (Id INTEGER NOT NULL, Day TEXT NOT NULL)");
-			await connection.ExecuteAsync("INSERT INTO Items (Id, Day) VALUES (1, '2026-09-01'), (2, '2026-09-02'), (3, '2026-09-03')");
+			return SqliteDatabase.OpenAsync(
+				"CREATE TABLE Items (Id INTEGER NOT NULL, Day TEXT NOT NULL)",
+				"INSERT INTO Items (Id, Day) VALUES (1, '2026-09-01'), (2, '2026-09-02'), (3, '2026-09-03')"
+			);
 		}
 
-		private class ByteArrayTypeHandler : TypeHandler<byte[]>
+		private enum Colour
 		{
-			public override void SetValue(IDbDataParameter parameter, byte[] value)
+			Red = 1,
+			Green = 2,
+			Blue = 3
+		}
+
+		private sealed class Fingerprint
+		{
+			public Fingerprint(byte[] value)
 			{
-				parameter.DbType = DbType.Binary;
-				parameter.Value = value;
+				Value = value;
 			}
 
-			public override byte[] Parse(object value)
+			public byte[] Value { get; }
+		}
+
+		private class FingerprintTypeHandler : TypeHandler<Fingerprint>
+		{
+			public override void SetValue(IDbDataParameter parameter, Fingerprint value)
 			{
-				return (byte[])value;
+				parameter.DbType = DbType.Binary;
+				parameter.Value = value.Value;
+			}
+
+			public override Fingerprint Parse(object value)
+			{
+				return new Fingerprint(((byte[])value).ToArray());
 			}
 		}
 

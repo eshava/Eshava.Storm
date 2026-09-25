@@ -12,12 +12,18 @@ namespace Eshava.Storm.MetaData
 {
 	public static class TypeAnalyzer
 	{
+		private static readonly object _analysisLock = new object();
+
 		public static void AddType<TEntity>(IEntityTypeConfiguration<TEntity> configuration) where TEntity : class
 		{
-			var builder = new EntityTypeBuilder<TEntity>();
-			configuration.Configure(builder);
+			lock (_analysisLock)
+			{
+				var builder = new EntityTypeBuilder<TEntity>();
+				configuration.Configure(builder);
 
-			AnalyzeType(typeof(TEntity));
+				CompleteAnalysis(builder.Entity);
+				EntityCache.AddEntity(builder.Entity);
+			}
 		}
 
 		public static void AddType<TEntity>() where TEntity : class
@@ -46,17 +52,7 @@ namespace Eshava.Storm.MetaData
 		public static string GetTableName<TEntity>() where TEntity : class
 		{
 			var type = typeof(TEntity);
-			var entity = EntityCache.GetEntity(type);
-
-			if (entity == default)
-			{
-				if (Settings.RestrictToRegisteredModels)
-				{
-					throw new ArgumentException($"The given type is not analyzed. Engine is restricted to analyzed type. Use {nameof(TypeAnalyzer)}.{nameof(TypeAnalyzer.AddType)}<>().");
-				}
-
-				entity = AnalyzeType(type);
-			}
+			var entity = GetOrAnalyzeEntity(type);
 
 			if (entity.TableName.IsNullOrEmpty())
 			{
@@ -66,29 +62,63 @@ namespace Eshava.Storm.MetaData
 			return entity.TableName;
 		}
 
-		internal static Entity AnalyzeType(Type type)
+		/// <summary>
+		/// Returns the analysis of a type, analysing it on first use unless the engine is restricted to registered models
+		/// </summary>
+		internal static Entity GetOrAnalyzeEntity(Type type)
 		{
 			var entity = EntityCache.GetEntity(type);
-
-			if (entity == default)
+			if (entity != default)
 			{
-				entity = new Entity(type, Enums.ConfigurationSource.DataAnnotation);
-				EntityCache.AddEntity(entity);
+				return entity;
 			}
 
+			if (Settings.RestrictToRegisteredModels)
+			{
+				throw new ArgumentException($"The given type is not analyzed. Engine is restricted to analyzed type. Use {nameof(TypeAnalyzer)}.{nameof(TypeAnalyzer.AddType)}<>().");
+			}
+
+			return AnalyzeType(type);
+		}
+
+		private static Entity AnalyzeType(Type type)
+		{
+			var entity = EntityCache.GetEntity(type);
+			if (entity != default)
+			{
+				return entity;
+			}
+
+			lock (_analysisLock)
+			{
+				entity = EntityCache.GetEntity(type);
+				if (entity != default)
+				{
+					return entity;
+				}
+
+				// The entity is published only once it is complete, a parallel reader must never see it half built
+				entity = new Entity(type, Enums.ConfigurationSource.DataAnnotation);
+				CompleteAnalysis(entity);
+				EntityCache.AddEntity(entity);
+
+				return entity;
+			}
+		}
+
+		private static void CompleteAnalysis(Entity entity)
+		{
 			AnalyzeType(entity);
 
 			if (entity.TableName.IsNullOrEmpty())
 			{
-				entity.SetTableName(GetTableName(type));
+				entity.SetTableName(GetTableName(entity.Type));
 			}
 
 			if (!entity.HasPrimaryKey())
 			{
 				DeterminePrimaryKeyByConvention(entity);
 			}
-
-			return entity;
 		}
 
 		private static void AnalyzeType(AbstractEntity entity)
@@ -167,8 +197,9 @@ namespace Eshava.Storm.MetaData
 							AnalyzeType(ownsOneEntity);
 						}
 					}
-					else if (property.IsOwnsOne && !property.OwnsOne.GetProperties().Any())
+					else if (property.IsOwnsOne)
 					{
+						// Also when some of its properties are configured: the analysis keeps them and adds the others
 						AnalyzeType(property.OwnsOne);
 					}
 

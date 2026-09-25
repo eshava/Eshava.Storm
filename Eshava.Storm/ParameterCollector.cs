@@ -111,7 +111,8 @@ namespace Eshava.Storm
 				dbType = parameter.Value.GetType().LookupDbType(parameterName, true, out handler);
 			}
 
-			if (handler == null && ((parameter.Value?.GetType().ImplementsIEnumerable() ?? false) || (parameter.Value?.GetType().IsArray ?? false)))
+			var valueType = parameter.Value?.GetType();
+			if (handler == null && valueType != null && !valueType.IsByteArray() && (valueType.ImplementsIEnumerable() || valueType.IsArray))
 			{
 				AddEnumerationParameter(parameter, command, dbType);
 
