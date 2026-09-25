@@ -20,6 +20,7 @@ namespace Eshava.Storm.IntegrationTests.Infrastructure
 		public static void AssemblyInitialize(TestContext context)
 		{
 			Settings.Dialect = SqlDialect.PostgreSql;
+			Linq.LinqSettings.Dialect = Linq.Enums.QueryDialect.PostgreSql;
 		}
 
 		public static async Task<NpgsqlConnection> OpenAsync(params string[] statements)

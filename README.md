@@ -548,6 +548,33 @@ So that the mapping looks like:
 settings.PropertyTypeMappings.Add(typeof(Omega),"o");
 ```
 
+Dialects and case
+------------------------------------------------------------
+The conditions are written for SQL Server by default. `Eshava.Storm.Linq` does not reference
+`Eshava.Storm`, so it has settings of its own; set them once at the start of the application, next to
+`Eshava.Storm.Settings.Dialect`.
+
+```csharp
+LinqSettings.Dialect = QueryDialect.PostgreSql;
+LinqSettings.TranslateCaseConversion = null; // null: follow the dialect
+```
+
+**Wildcards in a search term are escaped**, so `Contains("50%")` finds the text `50%`: with brackets on
+SQL Server, with a backslash on PostgreSQL, and with a backslash and an `ESCAPE` clause on SQLite.
+
+**`ToLower()` and `ToUpper()` on a column** are ignored on SQL Server and SQLite, where the collation
+usually ignores case and a function on the column would keep an index from being used. PostgreSQL
+compares case-sensitively, so there they are translated:
+
+| Expression | PostgreSQL |
+|---|---|
+| `p.Name.ToLower() == "anna"` | `lower(Name) = @p0` |
+| `names.Contains(p.Name.ToLower())` | `lower(Name) IN @p0Array` |
+| `p.Name.ToLower().Contains("nn")` | `Name ILIKE @p0` |
+
+`TranslateCaseConversion` overrides the dialect: `true` translates on every dialect — `lower()` and
+`upper()`, and `lower(Name) LIKE` where there is no `ILIKE` — and `false` ignores the calls everywhere.
+
 Comming soon
 ------------------------------------------------------------
 In a later stage there will be a intelligent processing of the member expressions.

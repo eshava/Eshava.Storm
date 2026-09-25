@@ -4,6 +4,24 @@ Notable changes per released version of the packages of this repository, `Eshava
 `Eshava.Storm.Linq`, newest first. Versions before `Eshava.Storm` 1.0.42 and `Eshava.Storm.Linq` 1.0.15
 are not documented here — the Git history is the source for those.
 
+## Eshava.Storm.Linq 1.1.0
+
+### Added
+
+* **`LinqSettings.Dialect`**, `SqlServer` by default, `Sqlite` and `PostgreSql`. `Eshava.Storm.Linq` does
+  not reference `Eshava.Storm`, so it has settings of its own, set next to `Settings.Dialect` of the
+  core. Named `LinqSettings` and `QueryDialect`, so that both namespaces can be imported together.
+* **Wildcards are escaped per dialect**: brackets on SQL Server, as before; a backslash on PostgreSQL,
+  its default escape character; a backslash and `ESCAPE '\'` on SQLite, whose `LIKE` has no escape
+  character of its own — the brackets never worked there.
+* **`ToLower()` and `ToUpper()` on a column can be translated**: `lower(column)` and `upper(column)` for
+  comparisons and lists, `ILIKE` on PostgreSQL for `Contains`, `StartsWith` and `EndsWith` on a lowered
+  or uppered column. **`LinqSettings.TranslateCaseConversion`** decides: `null`, the default, follows
+  the dialect — ignored on SQL Server and SQLite as before, translated on PostgreSQL, which compares
+  case-sensitively — while `true` and `false` force it for every dialect.
+
+  **Nothing changes for SQL Server**: the calls stay ignored, the bracket escaping stays.
+
 ## Eshava.Storm.PostgreSql 1.0.0
 
 ### Added
