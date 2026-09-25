@@ -14,12 +14,12 @@ namespace Eshava.Storm.Engines
 	{
 		public Task<IEnumerable<T>> QueryAsync<T>(CommandDefinition commandDefinition, Func<IObjectMapper, T> map)
 		{
-			return QueryThingsAsync(commandDefinition, map);
+			return QueryThingsAsync(commandDefinition, map, false);
 		}
 
 		public async Task<T> QueryFirstOrDefaultAsync<T>(CommandDefinition commandDefinition, Func<IObjectMapper, T> map)
 		{
-			return (await QueryThingsAsync(commandDefinition, map)).FirstOrDefault();
+			return (await QueryThingsAsync(commandDefinition, map, true).ConfigureAwait(false)).FirstOrDefault();
 		}
 
 		public Task<T> ExecuteScalarAsync<T>(CommandDefinition commandDefinition)
@@ -32,9 +32,8 @@ namespace Eshava.Storm.Engines
 			return ExecuteSomethingAsync(commandDefinition);
 		}
 
-		private async Task<IEnumerable<T>> QueryThingsAsync<T>(CommandDefinition commandDefinition, Func<IObjectMapper, T> map)
+		private async Task<IEnumerable<T>> QueryThingsAsync<T>(CommandDefinition commandDefinition, Func<IObjectMapper, T> map, bool firstRowOnly)
 		{
-			var returnType = typeof(T);
 			var parameterReader = GetParameterReader(commandDefinition.Parameters);
 			var wasClosed = commandDefinition.Connection.State == ConnectionState.Closed;
 
@@ -48,15 +47,25 @@ namespace Eshava.Storm.Engines
 						await ((DbConnection)commandDefinition.Connection).OpenAsync(commandDefinition.CancellationToken).ConfigureAwait(false);
 					}
 
-					reader = await command.ExecuteReaderAsync(GetBehavior(wasClosed, CommandBehavior.SingleResult | CommandBehavior.KeyInfo), commandDefinition.CancellationToken).ConfigureAwait(false);
+					var behavior = CommandBehavior.SingleResult | CommandBehavior.KeyInfo;
+					if (firstRowOnly)
+					{
+						behavior |= CommandBehavior.SingleRow;
+					}
+
+					reader = await command.ExecuteReaderAsync(GetBehavior(wasClosed, behavior), commandDefinition.CancellationToken).ConfigureAwait(false);
 
 					var objectMapper = new ObjectMapper(reader, commandDefinition.CommandText);
 					var buffer = new List<T>();
-					var convertToType = Nullable.GetUnderlyingType(returnType) ?? returnType;
 
 					while (await reader.ReadAsync(commandDefinition.CancellationToken).ConfigureAwait(false))
 					{
 						buffer.Add(Deserialize(objectMapper, map));
+
+						if (firstRowOnly)
+						{
+							break;
+						}
 					}
 
 					while (await reader.NextResultAsync(commandDefinition.CancellationToken).ConfigureAwait(false))

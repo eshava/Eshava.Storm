@@ -30,6 +30,16 @@ documented here — the Git history is the source for those.
   handler runs. On SQL Server that became `sql_variant` whenever the handler only set the value,
   which fails for values over 8000 bytes and keeps an index on the compared column from being used.
   The type is now the one the handler sets, or the one the provider infers from the value.
+* **Owned objects nested in owned objects are read from the columns they are written to.** Reading
+  dropped the outer prefix — `Address.Geo.Lat` was written to `Address_Geo_Lat` and read from
+  `Geo_Lat` — and took the prefix from the column name of the owned property where writing takes
+  its property name. Both now use the property names, as writing always did.
+* **`Settings.IgnoreDuplicatedColumns` applies to readers with a column schema too**, which includes
+  SqlClient and SQLite. It only worked for readers without one.
+* **`QueryFirstOrDefaultAsync` stops after the first row** instead of reading the whole result.
+* **Mapping is planned once per result instead of once per row.** Which column goes into which
+  property, including owned objects, is worked out for the first row and reused; the analysis of a
+  statement text is cached, and names are compared culture invariantly.
 
 ### Fixed
 
@@ -79,3 +89,24 @@ documented here — the Git history is the source for those.
   statement without a parameter, which failed.
 * **A list passed with a key that starts with `@`**, such as `"@Ids"` in a list of key value pairs,
   is expanded. It was left in the statement unreplaced.
+* **A statement without `FROM` can be mapped onto a class**, such as `SELECT 1 AS Id` or a stored
+  procedure call. The mapper searched the select list up to `" from "` and failed with an
+  `ArgumentOutOfRangeException` when there was none.
+* **A computed column is mapped when a table alias is requested.** `(SELECT COUNT(*) ...) AS Total`
+  in a query mapped with `Map<T>("i")` stayed at its default.
+* **An alias is recognised as a whole.** The alias `e` was also found in `le.`, which put the aliases
+  of a query in the wrong order and left values empty.
+* **A column is assigned to its table alias from the select list of the outermost statement**, and a
+  use under another name (`e.Name AS Label`) counts for the renamed column only. The select list used
+  to end at the first `" from "`, which is inside a subquery of the select list or inside a common
+  table expression, and a column at its end or renamed with `AS` was not recognised.
+* **Common table expressions, comma separated tables and derived tables in `FROM` can be mapped by
+  their alias**: `WITH Selected AS (...) SELECT s.* FROM Selected s`, `FROM Items a, Items b` and
+  `FROM (SELECT ...) x`. A derived table in a `JOIN` is mapped through the tables it reads from.
+  All of these returned empty objects.
+* **The same alias for derived tables in several parts of a statement**, as in a `UNION`, no longer
+  fails with *An item with the same key has already been added*.
+* **A table name can be used as alias** when the table has an alias in the statement. The comparison
+  never matched, because table names carry their schema.
+* **A reader without a column schema is supported.** Such a reader throws from `GetSchemaTable`, which
+  failed the query; the column types reported by `GetDataType` are now taken from the reader.

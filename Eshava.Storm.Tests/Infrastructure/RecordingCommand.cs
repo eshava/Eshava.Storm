@@ -32,6 +32,6 @@ namespace Eshava.Storm.Tests.Infrastructure
 
 		protected override DbParameter CreateDbParameter() => new SqlParameter();
 
-		protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior) => throw new System.NotSupportedException();
+		protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior) => _connection.Reader?.Invoke() ?? throw new System.NotSupportedException();
 	}
 }

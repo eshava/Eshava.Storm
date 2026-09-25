@@ -15,6 +15,11 @@ namespace Eshava.Storm.Tests.Infrastructure
 
 		public int NonQueryResult { get; set; } = 1;
 
+		/// <summary>
+		/// The reader a query returns
+		/// </summary>
+		public System.Func<DbDataReader> Reader { get; set; }
+
 		public override string ConnectionString { get; set; } = "";
 		public override string Database => "recording";
 		public override string DataSource => "recording";
