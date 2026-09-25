@@ -167,7 +167,8 @@ namespace Eshava.Storm
 				{
 					Name = $"{parameter.Name}_p{index}",
 					Value = value,
-					DbType = dbType,
+					// An element with a type handler has to look it up itself, a given DbType would skip that lookup
+					DbType = value != null && value.GetType().HasTypeHandler() ? null : dbType,
 					ParameterDirection = parameter.ParameterDirection
 				};
 

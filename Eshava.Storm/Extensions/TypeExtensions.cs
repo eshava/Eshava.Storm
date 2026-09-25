@@ -40,6 +40,12 @@ namespace Eshava.Storm.Extensions
 			if (type.ImplementsIEnumerable())
 			{
 				type = type.GetDataTypeFromIEnumerable();
+
+				// Each element is set through the handler of its own type, the enumeration itself has none
+				if (type.HasTypeHandler())
+				{
+					return DbType.Object;
+				}
 			}
 
 			if (type.IsArray)
@@ -103,6 +109,11 @@ namespace Eshava.Storm.Extensions
 			}
 
 			return type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Nullable<>);
+		}
+
+		internal static bool HasTypeHandler(this Type type)
+		{
+			return TypeHandlerMap.Map.ContainsKey(type.GetDataType());
 		}
 
 		internal static bool IsClass(this Type type)
