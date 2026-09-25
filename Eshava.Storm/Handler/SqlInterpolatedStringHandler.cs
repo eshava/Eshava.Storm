@@ -8,7 +8,14 @@ using System.Linq;
 
 namespace Eshava.Storm.Handler
 {
-
+	/// <summary>
+	/// Builds a SQL statement from an interpolated string.
+	/// A hole directly preceded by <c>@</c> becomes a parameter: <c>WHERE Name = @{name}</c>.
+	/// Any other hole is inserted into the statement as text, which is meant for identifiers such as
+	/// table and column names: <c>FROM {TypeAnalyzer.GetTableName&lt;Alpha&gt;()}</c>.
+	/// Never put a value into such a hole — it is not escaped, so a value that comes from outside the
+	/// application opens the statement to SQL injection.
+	/// </summary>
 	[InterpolatedStringHandler]
 	public ref struct SqlInterpolatedStringHandler
 	{
@@ -32,6 +39,9 @@ namespace Eshava.Storm.Handler
 			_hasAtSymbol = literal.Last() == '@';
 		}
 
+		/// <summary>
+		/// Adds a parameter when the preceding literal ends with <c>@</c>, and the value as unescaped text otherwise
+		/// </summary>
 		public void AppendFormatted<T>(T value)
 		{
 			if (_hasAtSymbol)

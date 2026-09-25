@@ -26,6 +26,10 @@ documented here — the Git history is the source for those.
   skipped by `BulkInsertAsync`, so the two paths stored different values. A handler that does not
   implement `IBulkInsertTypeHandler` gets an untyped column, since only the handler knows the type
   of the value it produces.
+* **A parameter set through a type handler no longer has its `DbType` forced to `Object`** before the
+  handler runs. On SQL Server that became `sql_variant` whenever the handler only set the value,
+  which fails for values over 8000 bytes and keeps an index on the compared column from being used.
+  The type is now the one the handler sets, or the one the provider infers from the value.
 
 ### Fixed
 
@@ -67,3 +71,11 @@ documented here — the Git history is the source for those.
   Configuring one property of the owned type used to drop every property that was not configured.
 * **Class mapping works on SQLite.** The object mapper read the `IsHidden` column of the schema
   table, which Microsoft.Data.Sqlite does not provide, so every query mapped onto a class failed.
+* **A list parameter replaces its own name only.** The expansion replaced `@Name` as plain text, so
+  `@Id` also rewrote `@IdName`, a list `@Id` corrupted an already expanded `@Ids`, and in an
+  interpolated statement with ten or more parameters a list in the first hole rewrote the tenth.
+  All of these failed with a syntax error.
+* **An empty list is an empty set**, `(SELECT NULL WHERE 1 = 0)`. It used to leave `IN @Name` in the
+  statement without a parameter, which failed.
+* **A list passed with a key that starts with `@`**, such as `"@Ids"` in a list of key value pairs,
+  is expanded. It was left in the statement unreplaced.
