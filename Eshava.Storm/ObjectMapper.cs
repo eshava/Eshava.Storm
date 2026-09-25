@@ -1,8 +1,10 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Eshava.Storm.Extensions;
 using Eshava.Storm.Interfaces;
 using Eshava.Storm.MetaData;
@@ -13,8 +15,18 @@ namespace Eshava.Storm
 {
 	internal class ObjectMapper : IObjectMapper, IObjectGenerator
 	{
+		private const int TEXTANALYSISCACHESIZE = 500;
+		private const string UNBOUNDTABLENAME = "none";
+		private const string EXPRESSIONTABLENAME = "*";
+
+		// The analysis of a statement text depends on the text only, so it is shared by every reader of the same statement
+		private static readonly ConcurrentDictionary<string, (Dictionary<string, IList<string>> TableAliases, Dictionary<string, int> AliasOccurrences, string SqlQuery)> _textAnalysisCache
+			= new ConcurrentDictionary<string, (Dictionary<string, IList<string>> TableAliases, Dictionary<string, int> AliasOccurrences, string SqlQuery)>();
+
 		private readonly DbDataReader _reader;
 		private readonly DataTypeMapper _dataTypeMapper;
+		private readonly Dictionary<(Type Type, string TableAlias), MappingPlan> _mappingPlans = new Dictionary<(Type Type, string TableAlias), MappingPlan>();
+		private readonly Dictionary<(string ColumnName, string TableAlias), int> _valueOrdinals = new Dictionary<(string ColumnName, string TableAlias), int>();
 		private TableAnalysisResult _tableAnalysisResult;
 		private DataTable _schemaTable = null;
 
@@ -42,83 +54,7 @@ namespace Eshava.Storm
 				return default;
 			}
 
-			columnName = columnName?.ToLower() ?? "";
-
-			if (!_tableAnalysisResult.ResultTableNames.Any() || !requestedTableNames.Any())
-			{
-				// No result analyse result available
-				if (!_tableAnalysisResult.ColumnCache.ContainsKey(columnName))
-				{
-					var columnNew = _tableAnalysisResult.ColumnCache.Keys.FirstOrDefault(c => c.EndsWith("." + columnName));
-					if (!columnNew.IsNullOrEmpty())
-					{
-						columnName = columnNew;
-					}
-				}
-
-				if (_tableAnalysisResult.ColumnCache.ContainsKey(columnName))
-				{
-					return _tableAnalysisResult.ColumnCache[columnName].Last().DataType;
-				}
-
-				return default;
-			}
-
-			var columnFound = false;
-			foreach (var requestedTableName in requestedTableNames)
-			{
-				var fullColumnNames = requestedTableName.TableNames.Select(tableName => $"{tableName}.{columnName}").ToList();
-				var fullColumnName = fullColumnNames.FirstOrDefault(f => _tableAnalysisResult.ColumnCache.ContainsKey(f));
-
-				if (fullColumnName.IsNullOrEmpty())
-				{
-					continue;
-				}
-
-				columnFound = true;
-				if (!_tableAnalysisResult.AliasOccurrences.ContainsKey(requestedTableName.Alias))
-				{
-					if (requestedTableName.TableNames.Any(t => t == requestedTableName.Alias))
-					{
-						return _tableAnalysisResult.ColumnCache[fullColumnName].Last().DataType;
-					}
-
-					// Skip property if alias is unknown
-
-					continue;
-				}
-
-				if (!Settings.EnableValueReadingBasedOnTableAliasOccurrence)
-				{
-					var column = _tableAnalysisResult.ColumnCache[fullColumnName].FirstOrDefault(c => c.TableAlias == requestedTableName.Alias);
-					if (column is not null)
-					{
-						return column.DataType;
-					}
-				}
-
-				var aliasOccurrence = _tableAnalysisResult.AliasOccurrences[requestedTableName.Alias];
-				if (aliasOccurrence >= _tableAnalysisResult.ColumnCache[fullColumnName].Count)
-				{
-					// Skip if correct column occurrence could not be found
-
-					continue;
-				}
-
-				return _tableAnalysisResult.ColumnCache[fullColumnName][aliasOccurrence].DataType;
-			}
-
-			if (!columnFound)
-			{
-				var fullColumnName = $"none.{columnName}";
-
-				if (_tableAnalysisResult.ColumnCache.ContainsKey(fullColumnName))
-				{
-					return _tableAnalysisResult.ColumnCache[fullColumnName].Last().DataType;
-				}
-			}
-
-			return default;
+			return FindColumns(columnName?.ToLowerInvariant() ?? "", requestedTableNames).FirstOrDefault()?.DataType;
 		}
 
 		public T GetValue<T>(string columnName, string tableAlias = null)
@@ -132,28 +68,30 @@ namespace Eshava.Storm
 
 			CalculateColumnCache();
 
-			(var hasInvalidAlias, var requestedTableNames) = GetTableNamesFromAlias(tableAlias);
-			if (hasInvalidAlias)
+			var key = (columnName, tableAlias ?? "");
+			if (!_valueOrdinals.TryGetValue(key, out var ordinal))
+			{
+				(var hasInvalidAlias, var requestedTableNames) = GetTableNamesFromAlias(tableAlias);
+				ordinal = hasInvalidAlias
+					? -1
+					: FindColumns(columnName.ToLowerInvariant(), requestedTableNames).FirstOrDefault()?.Ordinal ?? -1;
+
+				_valueOrdinals.Add(key, ordinal);
+			}
+
+			if (ordinal < 0)
 			{
 				return default;
 			}
 
-			var readerAccessItems = new List<ReaderAccessItem>();
-			var information = new PreProcessPropertyInformation
-			{
-				ReaderAccessItems = readerAccessItems,
-				Instance = null,
-				RequestedTableNames = requestedTableNames
-			};
-
-			CollectOrdinal(null, information, columnName.ToLower());
-
-			if (readerAccessItems.Count == 0)
+			var type = typeof(T);
+			var cellValue = ReadCell(type, ordinal);
+			if (cellValue == DBNull.Value)
 			{
 				return default;
 			}
 
-			return ExecuteReaderAccessItem<T>(readerAccessItems.First());
+			return (T)_dataTypeMapper.Map(type, cellValue);
 		}
 
 		public T Map<T>(string tableAlias = null)
@@ -162,25 +100,22 @@ namespace Eshava.Storm
 			{
 				CalculateColumnCache();
 
-				var resultObject = Activator.CreateInstance<T>();
-				(var hasInvalidAlias, var requestedTableNames) = GetTableNamesFromAlias(tableAlias);
-				if (hasInvalidAlias)
+				var key = (typeof(T), tableAlias ?? "");
+				if (!_mappingPlans.TryGetValue(key, out var mappingPlan))
 				{
-					return resultObject;
+					(var hasInvalidAlias, var requestedTableNames) = GetTableNamesFromAlias(tableAlias);
+
+					// An alias the statement does not know maps to an empty object
+					mappingPlan = hasInvalidAlias ? null : CreateMappingPlan(typeof(T), requestedTableNames);
+					_mappingPlans.Add(key, mappingPlan);
 				}
 
-				var readerAccessItems = new List<ReaderAccessItem>();
-
-				PreProcessProperties(new PreProcessPropertyInformation
+				if (mappingPlan == null)
 				{
-					ReaderAccessItems = readerAccessItems,
-					Instance = resultObject,
-					RequestedTableNames = requestedTableNames
-				});
+					return Activator.CreateInstance<T>();
+				}
 
-				ExecuteReaderAccessItems(readerAccessItems);
-
-				return resultObject;
+				return (T)ExecuteMappingPlan(mappingPlan);
 			}
 
 			var cellValue = _reader[0];
@@ -195,17 +130,7 @@ namespace Eshava.Storm
 
 		private object CreateEmptyInstance(Type type)
 		{
-			var entity = EntityCache.GetEntity(type);
-			if (entity == null)
-			{
-				if (Settings.RestrictToRegisteredModels)
-				{
-					throw new ArgumentException($"The given type is not analyzed. Engine is restricted to analyzed type. Use {nameof(TypeAnalyzer)}.{nameof(TypeAnalyzer.AddType)}<>().");
-				}
-
-				entity = TypeAnalyzer.AnalyzeType(type);
-			}
-
+			var entity = TypeAnalyzer.GetOrAnalyzeEntity(type);
 			var instance = Activator.CreateInstance(type);
 
 			foreach (var property in entity.GetProperties())
@@ -219,72 +144,91 @@ namespace Eshava.Storm
 			return instance;
 		}
 
-		private void PreProcessProperties(PreProcessPropertyInformation information)
+		private MappingPlan CreateMappingPlan(Type type, IEnumerable<(string Alias, IList<string> TableNames)> requestedTableNames)
 		{
-			information.Entity ??= EntityCache.GetEntity(information.Instance.GetType());
-			if (information.Entity == null)
-			{
-				if (Settings.RestrictToRegisteredModels)
-				{
-					throw new ArgumentException($"The given type is not analyzed. Engine is restricted to analyzed type. Use {nameof(TypeAnalyzer)}.{nameof(TypeAnalyzer.AddType)}<>().");
-				}
+			var mappingPlan = new MappingPlan(type);
+			AddToMappingPlan(mappingPlan, 0, TypeAnalyzer.GetOrAnalyzeEntity(type), "", requestedTableNames);
 
-				information.Entity = TypeAnalyzer.AnalyzeType(information.Instance.GetType());
-			}
+			// Read in column order, which a sequential reader requires
+			mappingPlan.Values.Sort((left, right) => left.Ordinal.CompareTo(right.Ordinal));
 
-			foreach (var property in information.Entity.GetProperties())
+			return mappingPlan;
+		}
+
+		private void AddToMappingPlan(MappingPlan mappingPlan, int slot, AbstractEntity entity, string columnPrefix, IEnumerable<(string Alias, IList<string> TableNames)> requestedTableNames)
+		{
+			foreach (var property in entity.GetProperties())
 			{
 				if (property.IsOwnsOne)
 				{
-					var ownsOneInstance = Activator.CreateInstance(property.Type);
-					property.PropertyInfo.SetValue(information.Instance, ownsOneInstance);
-					PreProcessProperties(new PreProcessPropertyInformation
-					{
-						ReaderAccessItems = information.ReaderAccessItems,
-						Instance = ownsOneInstance,
-						RequestedTableNames = information.RequestedTableNames,
-						ColumnPrefix = property.ColumnName.ToLower() + "_",
-						Entity = property.OwnsOne
-					});
+					mappingPlan.OwnedObjects.Add((slot, property.PropertyInfo, property.Type));
+
+					// The same prefix the insert and update write the columns of an owned object with
+					var ownedSlot = mappingPlan.OwnedObjects.Count;
+					AddToMappingPlan(mappingPlan, ownedSlot, property.OwnsOne, columnPrefix + property.Name.ToLowerInvariant() + "_", requestedTableNames);
+
+					continue;
 				}
 
-				var columnName = information.ColumnPrefix + property.ColumnName.ToLower();
-				CollectOrdinal(property, information, columnName);
+				var columnName = columnPrefix + property.ColumnName.ToLowerInvariant();
+				foreach (var column in FindColumns(columnName, requestedTableNames))
+				{
+					mappingPlan.Values.Add((slot, property.PropertyInfo, column.Ordinal));
+				}
 			}
 		}
 
-		private void CollectOrdinal(MetaData.Models.Property property, PreProcessPropertyInformation information, string columnName)
+		private object ExecuteMappingPlan(MappingPlan mappingPlan)
 		{
-			if (!_tableAnalysisResult.ResultTableNames.Any() || !information.RequestedTableNames.Any())
+			var instances = new object[mappingPlan.OwnedObjects.Count + 1];
+			instances[0] = Activator.CreateInstance(mappingPlan.Type);
+
+			for (var index = 0; index < mappingPlan.OwnedObjects.Count; index++)
+			{
+				var ownedObject = mappingPlan.OwnedObjects[index];
+				var instance = Activator.CreateInstance(ownedObject.Type);
+				ownedObject.Property.SetValue(instances[ownedObject.ParentSlot], instance);
+				instances[index + 1] = instance;
+			}
+
+			foreach (var value in mappingPlan.Values)
+			{
+				var propertyType = value.Property.PropertyType;
+				var cellValue = ReadCell(propertyType, value.Ordinal);
+				value.Property.SetValue(instances[value.Slot], _dataTypeMapper.Map(propertyType, cellValue));
+			}
+
+			return instances[0];
+		}
+
+		/// <summary>
+		/// The columns a property or value is read from, in the order they are applied
+		/// </summary>
+		private IEnumerable<ColumnCacheItem> FindColumns(string columnName, IEnumerable<(string Alias, IList<string> TableNames)> requestedTableNames)
+		{
+			var columnCache = _tableAnalysisResult.ColumnCache;
+
+			if (!_tableAnalysisResult.ResultTableNames.Any() || !requestedTableNames.Any())
 			{
 				// No result analyse result available
-				if (!_tableAnalysisResult.ColumnCache.ContainsKey(columnName))
+				var key = columnCache.ContainsKey(columnName)
+					? columnName
+					: columnCache.Keys.FirstOrDefault(c => c.EndsWith("." + columnName));
+
+				if (!key.IsNullOrEmpty())
 				{
-					var columnNew = _tableAnalysisResult.ColumnCache.Keys.FirstOrDefault(c => c.EndsWith("." + columnName));
-					if (!columnNew.IsNullOrEmpty())
-					{
-						columnName = columnNew;
-					}
+					yield return SelectDuplicate(columnCache[key]);
 				}
 
-				if (_tableAnalysisResult.ColumnCache.ContainsKey(columnName))
-				{
-					information.ReaderAccessItems.Add(new ReaderAccessItem
-					{
-						Ordinal = _tableAnalysisResult.ColumnCache[columnName].Last().Ordinal,
-						Instance = information.Instance,
-						PropertyInfo = property?.PropertyInfo
-					});
-				}
-
-				return;
+				yield break;
 			}
 
 			var columnFound = false;
-			foreach (var requestedTableName in information.RequestedTableNames)
+			foreach (var requestedTableName in requestedTableNames)
 			{
-				var fullColumnNames = requestedTableName.TableNames.Select(tableName => $"{tableName}.{columnName}").ToList();
-				var fullColumnName = fullColumnNames.FirstOrDefault(f => _tableAnalysisResult.ColumnCache.ContainsKey(f));
+				var fullColumnName = requestedTableName.TableNames
+					.Select(tableName => $"{tableName}.{columnName}")
+					.FirstOrDefault(columnCache.ContainsKey);
 
 				if (fullColumnName.IsNullOrEmpty())
 				{
@@ -292,17 +236,13 @@ namespace Eshava.Storm
 				}
 
 				columnFound = true;
+				var columns = columnCache[fullColumnName];
+
 				if (!_tableAnalysisResult.AliasOccurrences.ContainsKey(requestedTableName.Alias))
 				{
-					if (requestedTableName.TableNames.Any(t => t == requestedTableName.Alias))
+					if (IsTableName(requestedTableName.Alias, requestedTableName.TableNames))
 					{
-						// Alias is an table name
-						information.ReaderAccessItems.Add(new ReaderAccessItem
-						{
-							Ordinal = _tableAnalysisResult.ColumnCache[fullColumnName].Last().Ordinal,
-							Instance = information.Instance,
-							PropertyInfo = property?.PropertyInfo
-						});
+						yield return columns.Last();
 					}
 
 					// Skip property if alias is unknown
@@ -312,59 +252,61 @@ namespace Eshava.Storm
 
 				if (!Settings.EnableValueReadingBasedOnTableAliasOccurrence)
 				{
-					var column = _tableAnalysisResult.ColumnCache[fullColumnName].FirstOrDefault(c => c.TableAlias == requestedTableName.Alias);
+					var column = columns.FirstOrDefault(c => c.TableAlias == requestedTableName.Alias);
 					if (column is not null)
 					{
-						information.ReaderAccessItems.Add(new ReaderAccessItem
-						{
-							Ordinal = column.Ordinal,
-							Instance = information.Instance,
-							PropertyInfo = property?.PropertyInfo
-						});
+						yield return column;
 
 						continue;
 					}
 				}
 
 				var aliasOccurrence = _tableAnalysisResult.AliasOccurrences[requestedTableName.Alias];
-				if (aliasOccurrence >= _tableAnalysisResult.ColumnCache[fullColumnName].Count)
+				if (aliasOccurrence >= columns.Count)
 				{
 					// Skip if correct column occurrence could not be found
 
 					continue;
 				}
 
-				var columnCacheItem = _tableAnalysisResult.ColumnCache[fullColumnName][aliasOccurrence];
-				if (!columnCacheItem.TableAlias.IsNullOrEmpty() 
-					&& !requestedTableName.Alias.IsNullOrEmpty() 
+				var columnCacheItem = columns[aliasOccurrence];
+				if (!columnCacheItem.TableAlias.IsNullOrEmpty()
+					&& !requestedTableName.Alias.IsNullOrEmpty()
 					&& columnCacheItem.TableAlias != requestedTableName.Alias
 				)
 				{
 					continue;
 				}
 
-				information.ReaderAccessItems.Add(new ReaderAccessItem
-				{
-					Ordinal = columnCacheItem.Ordinal,
-					Instance = information.Instance,
-					PropertyInfo = property?.PropertyInfo
-				});
+				yield return columnCacheItem;
 			}
 
 			if (!columnFound)
 			{
-				var fullColumnName = $"none.{columnName}";
+				// A column that belongs to no table, a computed one for instance
+				var unboundColumns = columnCache.Values.FirstOrDefault(columns =>
+					columns[0].ColumnName == columnName
+					&& (columns[0].TableName == UNBOUNDTABLENAME || columns[0].TableName == EXPRESSIONTABLENAME)
+				);
 
-				if (_tableAnalysisResult.ColumnCache.ContainsKey(fullColumnName))
+				if (unboundColumns != null)
 				{
-					information.ReaderAccessItems.Add(new ReaderAccessItem
-					{
-						Ordinal = _tableAnalysisResult.ColumnCache[fullColumnName].Last().Ordinal,
-						Instance = information.Instance,
-						PropertyInfo = property?.PropertyInfo
-					});
+					yield return unboundColumns.Last();
 				}
 			}
+		}
+
+		/// <summary>
+		/// Without a table alias, a duplicated column is read from its last occurrence, or its first one if duplicates are ignored
+		/// </summary>
+		private static ColumnCacheItem SelectDuplicate(IList<ColumnCacheItem> columns)
+		{
+			return Settings.IgnoreDuplicatedColumns ? columns.First() : columns.Last();
+		}
+
+		private static bool IsTableName(string alias, IList<string> tableNames)
+		{
+			return tableNames.Any(tableName => tableName == alias || tableName.EndsWith("." + alias));
 		}
 
 		private (bool HasInvalidAlias, IEnumerable<(string Alias, IList<string> TableNames)> Aliases) GetTableNamesFromAlias(string tableAlias)
@@ -382,10 +324,20 @@ namespace Eshava.Storm
 				if (_tableAnalysisResult.TableAliases.ContainsKey(tableAliasName))
 				{
 					tableAliases.Add((tableAliasName, _tableAnalysisResult.TableAliases[tableAliasName]));
+
+					continue;
 				}
-				else if (_tableAnalysisResult.TableAliases.Values.Any(t => t.Any(tableName => tableName == tableAliasName)))
+
+				// A table name used as alias
+				var tableNames = _tableAnalysisResult.TableAliases.Values
+					.SelectMany(names => names)
+					.Where(tableName => IsTableName(tableAliasName, new[] { tableName }))
+					.Distinct()
+					.ToList();
+
+				if (tableNames.Count > 0)
 				{
-					tableAliases.Add((tableAliasName, new List<string> { tableAliasName }));
+					tableAliases.Add((tableAliasName, tableNames));
 				}
 			}
 
@@ -394,38 +346,49 @@ namespace Eshava.Storm
 
 		private void SetTableAnalysisResult(string sql)
 		{
-			if (sql.IsNullOrEmpty())
+			var textAnalysis = sql.IsNullOrEmpty()
+				? (new Dictionary<string, IList<string>>(), new Dictionary<string, int>(), null)
+				: GetTextAnalysis(sql);
+
+			_tableAnalysisResult = new TableAnalysisResult
 			{
-				return;
+				TableAliases = textAnalysis.TableAliases,
+				AliasOccurrences = textAnalysis.AliasOccurrences,
+				SqlQuery = textAnalysis.SqlQuery
+			};
+		}
+
+		private static (Dictionary<string, IList<string>> TableAliases, Dictionary<string, int> AliasOccurrences, string SqlQuery) GetTextAnalysis(string sql)
+		{
+			if (_textAnalysisCache.TryGetValue(sql, out var textAnalysis))
+			{
+				return textAnalysis;
 			}
 
 			var tableAliases = sql.GetTableAliases();
 			var aliasOccurrences = CalculateTableAliasUsage(sql, tableAliases);
+			textAnalysis = (tableAliases, aliasOccurrences.Occurrences, aliasOccurrences.SqlQuery);
 
-			var tableAnalysisResult = new TableAnalysisResult
+			// Bounded, since a statement text can contain values and the number of texts is not
+			if (_textAnalysisCache.Count >= TEXTANALYSISCACHESIZE)
 			{
-				TableAliases = tableAliases,
-				AliasOccurrences = aliasOccurrences.Occurrences,
-				SqlQuery = aliasOccurrences.SqlQuery
-			};
-
-			_tableAnalysisResult = tableAnalysisResult;
-		}
-
-		private (string SqlQuery, Dictionary<string, int> Occurrences) CalculateTableAliasUsage(string sql, Dictionary<string, IList<string>> tableAliases)
-		{
-			if (sql.IsNullOrEmpty())
-			{
-				return (null, null);
+				_textAnalysisCache.Clear();
 			}
 
+			_textAnalysisCache.TryAdd(sql, textAnalysis);
+
+			return textAnalysis;
+		}
+
+		private static (string SqlQuery, Dictionary<string, int> Occurrences) CalculateTableAliasUsage(string sql, Dictionary<string, IList<string>> tableAliases)
+		{
 			sql = sql.Replace("\r", "")
 					 .Replace("\n", " ")
 					 .Replace("\t", " ")
-					 .ToLower();
+					 .ToLowerInvariant();
 
 			var aliasOccurrences = tableAliases
-				.Select(pair => (Alias: pair.Key, Tables: String.Join("", pair.Value.OrderBy(t => t)), Index: sql.IndexOf(pair.Key + ".")))
+				.Select(pair => (Alias: pair.Key, Tables: String.Join("", pair.Value.OrderBy(t => t)), Index: IndexOfAlias(sql, pair.Key)))
 				.GroupBy(t => t.Tables);
 
 			var resultAliasOccurrences = new Dictionary<string, int>();
@@ -441,6 +404,16 @@ namespace Eshava.Storm
 			return (sql, resultAliasOccurrences);
 		}
 
+		/// <summary>
+		/// The first use of an alias as a qualifier; the alias e must not be found in le.
+		/// </summary>
+		private static int IndexOfAlias(string sql, string alias)
+		{
+			var match = Regex.Match(sql, $@"(?<![\p{{L}}\p{{N}}_$#@.\]]){Regex.Escape(alias)}\.", RegexOptions.CultureInvariant);
+
+			return match.Success ? match.Index : -1;
+		}
+
 		private void CalculateColumnCache()
 		{
 			if (_tableAnalysisResult.ColumnCache != default)
@@ -448,169 +421,191 @@ namespace Eshava.Storm
 				return;
 			}
 
-			if (_reader.CanGetColumnSchema())
-			{
-				_schemaTable = _reader.GetSchemaTable();
-			}
+			_schemaTable = GetSchemaTableIfAvailable();
 
 			var columnCache = new Dictionary<string, IList<ColumnCacheItem>>();
-			var columnDataTypeCache = new Dictionary<string, IList<Type>>();
 			var resultTableNames = new HashSet<string>();
 
 			if (_schemaTable == default)
 			{
 				for (var columnOrdinal = 0; columnOrdinal < _reader.FieldCount; columnOrdinal++)
 				{
-					var columnName = _reader.GetName(columnOrdinal).ToLower();
+					var columnName = _reader.GetName(columnOrdinal).ToLowerInvariant();
+					var columnCacheItem = new ColumnCacheItem(columnOrdinal, _reader.GetFieldType(columnOrdinal), columnName, EXPRESSIONTABLENAME, "dbo");
 
 					if (columnCache.ContainsKey(columnName))
 					{
-						if (!Settings.IgnoreDuplicatedColumns)
-						{
-							columnCache[columnName].Add(new ColumnCacheItem(columnOrdinal, Type.GetType(_reader.GetDataTypeName(columnOrdinal)), columnName, "*", "dbo"));
-						}
+						columnCache[columnName].Add(columnCacheItem);
 					}
 					else
 					{
-						columnCache.Add(columnName, [new ColumnCacheItem(columnOrdinal, Type.GetType(_reader.GetDataTypeName(columnOrdinal)), columnName, "*", "dbo")]);
-						columnDataTypeCache.Add(columnName, []);
+						columnCache.Add(columnName, [columnCacheItem]);
 					}
 				}
 			}
 			else
 			{
+				var schemaRows = _schemaTable.Rows
+					.Cast<DataRow>()
+					.GroupBy(row => Convert.ToInt32(row["ColumnOrdinal"]))
+					.ToDictionary(group => group.Key, group => group.First());
+
 				for (var columnOrdinal = 0; columnOrdinal < _reader.FieldCount; columnOrdinal++)
 				{
-					foreach (DataRow row in _schemaTable.Rows)
+					if (!schemaRows.TryGetValue(columnOrdinal, out var row))
 					{
-						if (Convert.ToInt32(row["ColumnOrdinal"]) == columnOrdinal)
-						{
-							Type columnDataType = null;
-							var dataType = row["DataType"];
-							if (dataType != DBNull.Value)
-							{
-								columnDataType = dataType as Type;
-							}
-
-							var isExpression = Convert.ToBoolean(row["IsExpression"]);
-							var schemaName = row["BaseSchemaName"]?.ToString();
-							var tableName = row["BaseTableName"]?.ToString();
-							var columnName = row["ColumnName"]?.ToString();
-							var isHidden = Convert.ToBoolean(row["IsHidden"]?.ToString() ?? "0");
-
-							if (isHidden)
-							{
-								continue;
-							}
-
-							if (schemaName.IsNullOrEmpty())
-							{
-								schemaName = "dbo";
-							}
-
-							if (tableName.IsNullOrEmpty())
-							{
-								tableName = isExpression ? "*" : "none";
-							}
-
-							if (columnName.IsNullOrEmpty())
-							{
-								columnName = "none";
-							}
-
-							schemaName = schemaName.ToLower();
-							tableName = tableName.ToLower();
-							columnName = columnName.ToLower();
-
-							var name = $"{schemaName}.{tableName}.{columnName}";
-
-							if (columnCache.ContainsKey(name))
-							{
-								columnCache[name].Add(new ColumnCacheItem(columnOrdinal, columnDataType, columnName, tableName, schemaName));
-							}
-							else
-							{
-								columnCache.Add(name, [new ColumnCacheItem(columnOrdinal, columnDataType, columnName, tableName, schemaName)]);
-							}
-
-							break;
-						}
+						continue;
 					}
 
-					foreach (DataRow row in _schemaTable.Rows)
+					// Not every provider reports hidden columns, SQLite for one has no such column in its schema table
+					var isHidden = GetSchemaValue(row, "IsHidden") is bool hidden && hidden;
+					if (isHidden)
 					{
-						var schemaName = row["BaseSchemaName"]?.ToString() ?? "dbo";
-						var baseTableName = row["BaseTableName"].ToString();
-						var schemaAndTable = $"{schemaName}.{baseTableName}";
-
-						if (!resultTableNames.Contains(schemaAndTable))
-						{
-							resultTableNames.Add(schemaAndTable);
-						}
+						continue;
 					}
+
+					var columnDataType = GetSchemaValue(row, "DataType") as Type;
+					var isExpression = GetSchemaValue(row, "IsExpression") is bool expression && expression;
+					var schemaName = GetSchemaValue(row, "BaseSchemaName")?.ToString();
+					var tableName = GetSchemaValue(row, "BaseTableName")?.ToString();
+					var columnName = GetSchemaValue(row, "ColumnName")?.ToString();
+					var baseColumnName = GetSchemaValue(row, "BaseColumnName")?.ToString();
+
+					if (schemaName.IsNullOrEmpty())
+					{
+						schemaName = "dbo";
+					}
+
+					if (tableName.IsNullOrEmpty())
+					{
+						tableName = isExpression ? EXPRESSIONTABLENAME : UNBOUNDTABLENAME;
+					}
+
+					if (columnName.IsNullOrEmpty())
+					{
+						columnName = UNBOUNDTABLENAME;
+					}
+
+					schemaName = schemaName.ToLowerInvariant();
+					tableName = tableName.ToLowerInvariant();
+					columnName = columnName.ToLowerInvariant();
+					baseColumnName = baseColumnName.IsNullOrEmpty() ? columnName : baseColumnName.ToLowerInvariant();
+
+					var name = $"{schemaName}.{tableName}.{columnName}";
+					var columnCacheItem = new ColumnCacheItem(columnOrdinal, columnDataType, columnName, tableName, schemaName, baseColumnName);
+
+					if (columnCache.ContainsKey(name))
+					{
+						columnCache[name].Add(columnCacheItem);
+					}
+					else
+					{
+						columnCache.Add(name, [columnCacheItem]);
+					}
+				}
+
+				foreach (DataRow row in _schemaTable.Rows)
+				{
+					var schemaName = GetSchemaValue(row, "BaseSchemaName")?.ToString() ?? "dbo";
+					resultTableNames.Add($"{schemaName}.{GetSchemaValue(row, "BaseTableName")}");
 				}
 			}
 
 			if (!Settings.EnableValueReadingBasedOnTableAliasOccurrence && !_tableAnalysisResult.SqlQuery.IsNullOrEmpty())
 			{
-				var indexOfFrom = _tableAnalysisResult.SqlQuery
-					.IndexOf(" from ");
-
-				var preparedQuery = _tableAnalysisResult.SqlQuery
-					.Substring(0, indexOfFrom)
-					.Replace("[", "")
-					.Replace("]", "");
-
-				foreach (var item in columnCache)
-				{
-					var firstOccurrence = item.Value[0];
-					if (firstOccurrence.TableName == "none" || firstOccurrence.TableName == "*" || firstOccurrence.ColumnName == "none")
-					{
-						continue;
-					}
-
-					var tableAlias = _tableAnalysisResult.TableAliases
-						.Where(alias => alias.Value.Contains($"{firstOccurrence.SchemaName}.{firstOccurrence.TableName}"))
-						.Select(alias => alias.Key)
-						.ToList();
-
-					var collumnOccurrences = tableAlias
-						.Select(alias => (Alias: alias, Index: IndexOf(preparedQuery, alias, firstOccurrence.ColumnName)))
-						.Where(occurence => occurence.Index >= 0)
-						.OrderBy(occurence => occurence.Index)
-						.ToList();
-
-					for (var columnIndex = 0; columnIndex < item.Value.Count; columnIndex++)
-					{
-						if (collumnOccurrences.Count <= columnIndex)
-						{
-							break;
-						}
-
-						item.Value[columnIndex].TableAlias = collumnOccurrences[columnIndex].Alias;
-					}
-				}
+				AssignTableAliases(columnCache);
 			}
 
 			_tableAnalysisResult.ColumnCache = columnCache;
 			_tableAnalysisResult.ResultTableNames = resultTableNames.ToList();
 		}
 
-		private static int IndexOf(string sql, string tableAlias, string columnName)
+		/// <summary>
+		/// Assigns each occurrence of a column to the table alias it is selected with, in the order of the select list
+		/// </summary>
+		private void AssignTableAliases(Dictionary<string, IList<ColumnCacheItem>> columnCache)
 		{
-			var columnNames = new[]{
-				$" {tableAlias}.{columnName} ",
-				$" {tableAlias}.{columnName},",
-				$",{tableAlias}.{columnName} ",
-				$",{tableAlias}.*",
-				$" {tableAlias}.*"
-			};
+			// The trailing blank ends the last column of the list
+			var preparedQuery = _tableAnalysisResult.SqlQuery
+				.GetMainSelectList()
+				.Replace("[", "")
+				.Replace("]", "")
+				+ " ";
 
-			var index = columnNames
-				.Select(c => sql.IndexOf(c))
-				.Max();
+			foreach (var item in columnCache)
+			{
+				var firstOccurrence = item.Value[0];
+				if (firstOccurrence.TableName == UNBOUNDTABLENAME || firstOccurrence.TableName == EXPRESSIONTABLENAME || firstOccurrence.ColumnName == UNBOUNDTABLENAME)
+				{
+					continue;
+				}
 
-			return index;
+				var tableAlias = _tableAnalysisResult.TableAliases
+					.Where(alias => alias.Value.Contains($"{firstOccurrence.SchemaName}.{firstOccurrence.TableName}"))
+					.Select(alias => alias.Key)
+					.ToList();
+
+				var collumnOccurrences = tableAlias
+					.Select(alias => (Alias: alias, Index: IndexOfColumn(preparedQuery, alias, firstOccurrence)))
+					.Where(occurence => occurence.Index >= 0)
+					.OrderBy(occurence => occurence.Index)
+					.ToList();
+
+				for (var columnIndex = 0; columnIndex < item.Value.Count; columnIndex++)
+				{
+					if (collumnOccurrences.Count <= columnIndex)
+					{
+						break;
+					}
+
+					item.Value[columnIndex].TableAlias = collumnOccurrences[columnIndex].Alias;
+				}
+			}
+		}
+
+		/// <summary>
+		/// The first position the select list reads the column through the alias: by name, through <c>alias.*</c>,
+		/// or, for a column renamed in the select list, as <c>alias.BaseColumn AS Name</c>
+		/// </summary>
+		private static int IndexOfColumn(string selectList, string tableAlias, ColumnCacheItem column)
+		{
+			// A column selected under another name is a different column of the result, so a renamed use does not count
+			var columnPattern = column.BaseColumnName == column.ColumnName
+				? $@"({Regex.Escape(column.ColumnName)}(?![\p{{L}}\p{{N}}_$#@])(?!\s+(as\s+)?[\p{{L}}_""]\S*\s*(,|$))|\*)"
+				: $@"{Regex.Escape(column.BaseColumnName)}\s+(as\s+)?""?{Regex.Escape(column.ColumnName)}""?(?![\p{{L}}\p{{N}}_$#@])";
+
+			var match = Regex.Match(
+				selectList,
+				$@"(?<![\p{{L}}\p{{N}}_$#@.]){Regex.Escape(tableAlias)}\.{columnPattern}",
+				RegexOptions.CultureInvariant
+			);
+
+			return match.Success ? match.Index : -1;
+		}
+
+		private DataTable GetSchemaTableIfAvailable()
+		{
+			try
+			{
+				// Every DbDataReader claims to support a column schema, but a reader without one throws
+				return _reader.CanGetColumnSchema() ? _reader.GetSchemaTable() : null;
+			}
+			catch (NotSupportedException)
+			{
+				return null;
+			}
+		}
+
+		private static object GetSchemaValue(DataRow row, string columnName)
+		{
+			if (!row.Table.Columns.Contains(columnName))
+			{
+				return null;
+			}
+
+			var value = row[columnName];
+
+			return value == DBNull.Value ? null : value;
 		}
 
 		private bool ShouldMapClass<T>()
@@ -618,45 +613,19 @@ namespace Eshava.Storm
 			return !typeof(T).IsNoClass();
 		}
 
-		private void ExecuteReaderAccessItems(IEnumerable<ReaderAccessItem> readerAccessItems)
-		{
-			readerAccessItems = readerAccessItems
-				.Where(rai => rai.Ordinal >= 0)
-				.OrderBy(rai => rai.Ordinal)
-				.ToList();
-
-			foreach (var item in readerAccessItems)
-			{
-				var cellValue = ExecuteReaderAccessItem(item.PropertyInfo.PropertyType, item.Ordinal);
-				item.PropertyInfo.SetValue(item.Instance, _dataTypeMapper.Map(item.PropertyInfo.PropertyType, cellValue));
-			}
-		}
-
-		private T ExecuteReaderAccessItem<T>(ReaderAccessItem readerAccessItem)
-		{
-			var type = typeof(T);
-			var cellValue = ExecuteReaderAccessItem(type, readerAccessItem.Ordinal);
-			if (cellValue == DBNull.Value)
-			{
-				return default;
-			}
-
-			return (T)_dataTypeMapper.Map(type, cellValue);
-		}
-
-		private object ExecuteReaderAccessItem(Type type, int ordinal)
+		private object ReadCell(Type type, int ordinal)
 		{
 			type = type.GetDataType();
 
-			if (TypeHandlerMap.Map.ContainsKey(type))
+			if (TypeHandlerMap.Map.TryGetValue(type, out var typeHandler))
 			{
-				return GetValueByTypeHandler(type, TypeHandlerMap.Map[type], ordinal);
+				return GetValueByTypeHandler(typeHandler, ordinal);
 			}
 
 			return _reader[ordinal];
 		}
 
-		private object GetValueByTypeHandler(Type type, ITypeHandler typeHandler, int ordinal)
+		private object GetValueByTypeHandler(ITypeHandler typeHandler, int ordinal)
 		{
 			if (!typeHandler.ReadAsByteArray)
 			{
@@ -672,7 +641,8 @@ namespace Eshava.Storm
 			var result = new byte[size];
 			_reader.GetBytes(ordinal, 0, result, 0, result.Length);
 
-			return typeHandler.Parse(type, result);
+			// Only read here: the handler parses the bytes once, in the data type mapper
+			return result;
 		}
 	}
 }

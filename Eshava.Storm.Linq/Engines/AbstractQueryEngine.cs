@@ -1,25 +1,27 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using Eshava.Storm.Linq.Extensions;
 using Eshava.Storm.Linq.Models;
+using Eshava.Storm.Linq.Visitors;
 
 namespace Eshava.Storm.Linq.Engines
 {
 	internal abstract class AbstractQueryEngine
 	{
-		private static readonly Type _dateTimeType = typeof(DateTime);
 		private const string PARAMETER_PLACEHOLDER = "###";
 		private const string METHOD_CONTAINS = "contains";
 		private const string METHOD_ANY = "any";
 		private const string METHOD_STARTSWITH = "startswith";
 		private const string METHOD_ENDSWITH = "endswith";
 		private const string METHOD_COMPARETO = "compareto";
-		private const string METHOD_CONTAINEDIN = "containedin";
 		private const string METHOD_TOUPPER = "toupper";
 		private const string METHOD_TOLOWER = "tolower";
+		private const string SQL_TRUE = "(1 = 1)";
+		private const string SQL_FALSE = "(1 = 0)";
 
 		protected const string SQL_AND = "AND";
 
@@ -37,17 +39,38 @@ namespace Eshava.Storm.Linq.Engines
 			{  ExpressionType.OrElse, "OR" }
 		};
 
+		/// <summary>
+		/// Translates a condition that stands on its own: a value that is known up front becomes a literal predicate
+		/// </summary>
+		protected string ProcessCondition(Expression expression, WhereQueryData data)
+		{
+			if (IsEvaluable(expression) && expression.Type == typeof(bool))
+			{
+				return (bool)Evaluate(expression) ? SQL_TRUE : SQL_FALSE;
+			}
+
+			return ProcessExpression(expression, data, null);
+		}
+
 		protected string ProcessExpression(Expression expression, WhereQueryData data, ExpressionType? parentExpressionType)
 		{
+			// A part of the expression that does not depend on the lambda parameter is a value: it is evaluated once
+			// and passed as a parameter, whatever it is made of — a captured variable, a member of a captured object,
+			// a static member or a method call
+			if (IsEvaluable(expression))
+			{
+				return ProcessConstantExpression(Evaluate(expression), data);
+			}
+
 			var unaryExpression = expression as UnaryExpression;
 			if (unaryExpression != default && expression.NodeType == ExpressionType.Not)
 			{
 				return ProcessUnaryExpressionNot(unaryExpression, data);
 			}
 
-			if (unaryExpression != default && expression.NodeType == ExpressionType.Convert)
+			if (unaryExpression != default && (expression.NodeType == ExpressionType.Convert || expression.NodeType == ExpressionType.ConvertChecked))
 			{
-				return ProcessUnaryExpressionConvert(unaryExpression, data);
+				return ProcessExpression(unaryExpression.Operand, data, unaryExpression.NodeType);
 			}
 
 			var binaryExpression = expression as BinaryExpression;
@@ -57,26 +80,11 @@ namespace Eshava.Storm.Linq.Engines
 			}
 
 			var memberExpression = expression as MemberExpression;
-			if (memberExpression != default && expression.NodeType == ExpressionType.MemberAccess)
+			if (memberExpression != default)
 			{
-				if (memberExpression.Expression == default)
-				{
-					return ProcessExpressionlessMemberExpression(data, memberExpression);
-				}
-				else if (memberExpression.Expression.NodeType == ExpressionType.Constant)
-				{
-					return ProcessDisplayClassConstantExpression(memberExpression, data);
-				}
-
 				var result = ProcessMemberExpression(memberExpression, data);
 
 				return CheckMemberExpressionBooleanPropertyIssue(data, parentExpressionType, result);
-			}
-
-			var constantExpression = expression as ConstantExpression;
-			if (expression.NodeType == ExpressionType.Constant)
-			{
-				return ProcessConstantExpression(constantExpression, data);
 			}
 
 			var methodCallExpression = expression as MethodCallExpression;
@@ -90,20 +98,7 @@ namespace Eshava.Storm.Linq.Engines
 				return ProcessParameterExpression(expression as ParameterExpression, data);
 			}
 
-			return "";
-		}
-
-		private string ProcessExpressionlessMemberExpression(WhereQueryData data, MemberExpression memberExpression)
-		{
-			if (memberExpression.Type == _dateTimeType)
-			{
-				var value = GetValueFromDisplayClass(memberExpression.Member, null);
-				var newConstantExpression = Expression.Constant(value, memberExpression.Type);
-
-				return ProcessExpression(newConstantExpression, data, memberExpression.NodeType);
-			}
-
-			return "";
+			throw new NotSupportedException($"The expression {expression} cannot be translated to SQL.");
 		}
 
 		protected string MapPropertyPath(QuerySettings data, string propertyName)
@@ -145,55 +140,72 @@ namespace Eshava.Storm.Linq.Engines
 
 		private string ProcessBinaryExpression(BinaryExpression binaryExpression, WhereQueryData data)
 		{
-			var isPropertyIssueLeft = binaryExpression.Left.NodeType == ExpressionType.MemberAccess && IsCombinationType(binaryExpression.NodeType);
-			var isPropertyIssueRight = binaryExpression.Right.NodeType == ExpressionType.MemberAccess && IsCombinationType(binaryExpression.NodeType);
-
-			var left = ProcessExpression(binaryExpression.Left, data, isPropertyIssueLeft ? null : ExpressionType.Default);
-			var right = ProcessExpression(binaryExpression.Right, data, isPropertyIssueRight ? null : ExpressionType.Default);
-
 			if (!_expressionTypeMappings.ContainsKey(binaryExpression.NodeType))
 			{
-				// Skip unsupported expression 
-
-				return "";
+				throw new NotSupportedException($"The operator {binaryExpression.NodeType} in {binaryExpression} cannot be translated to SQL.");
 			}
 
 			var nodeType = _expressionTypeMappings[binaryExpression.NodeType];
 
-			if (left == "")
+			if (IsCombinationType(binaryExpression.NodeType))
 			{
-				// Inner lamba expression 
+				var leftCondition = ProcessCombinationOperand(binaryExpression.Left, data);
+				var rightCondition = ProcessCombinationOperand(binaryExpression.Right, data);
 
-				return $"({PARAMETER_PLACEHOLDER} {nodeType} {MapPropertyPath(data, right)})";
-			}
-			else if (right == "")
-			{
-				// Inner lamba expression 
-
-				return $"({MapPropertyPath(data, left)} {nodeType} {PARAMETER_PLACEHOLDER})";
+				return $"({leftCondition} {nodeType} {rightCondition})";
 			}
 
-			// Special case handling for NULL and NOT NULL 
-			if (binaryExpression.NodeType == ExpressionType.Equal && right == null)
+			var left = ProcessExpression(binaryExpression.Left, data, ExpressionType.Default);
+			var right = ProcessExpression(binaryExpression.Right, data, ExpressionType.Default);
+
+			// NULL on either side is a test for NULL
+			if (left == null && right != null)
 			{
-				nodeType = "IS";
-				right = "NULL";
-			}
-			else if (binaryExpression.NodeType == ExpressionType.NotEqual && right == null)
-			{
-				nodeType = "IS NOT";
-				right = "NULL";
+				(left, right) = (right, left);
 			}
 
-			return $"({MapPropertyPath(data, left)} {nodeType} {right})";
+			if (right == null && (binaryExpression.NodeType == ExpressionType.Equal || binaryExpression.NodeType == ExpressionType.NotEqual))
+			{
+				if (left == null)
+				{
+					return binaryExpression.NodeType == ExpressionType.Equal ? SQL_TRUE : SQL_FALSE;
+				}
+
+				return $"({MapPropertyPath(data, left)} {(binaryExpression.NodeType == ExpressionType.Equal ? "IS" : "IS NOT")} NULL)";
+			}
+
+			if (left == null || right == null)
+			{
+				throw new NotSupportedException($"NULL cannot be compared with {binaryExpression.NodeType} in {binaryExpression}.");
+			}
+
+			return $"({MapPropertyPath(data, left)} {nodeType} {MapPropertyPath(data, right)})";
+		}
+
+		private string ProcessCombinationOperand(Expression operand, WhereQueryData data)
+		{
+			if (IsEvaluable(operand) && operand.Type == typeof(bool))
+			{
+				return (bool)Evaluate(operand) ? SQL_TRUE : SQL_FALSE;
+			}
+
+			// A boolean member standing on its own is completed to a comparison, "p => p.IsActive" means "p.IsActive = true"
+			return ProcessExpression(operand, data, operand.NodeType == ExpressionType.MemberAccess ? null : ExpressionType.Default);
 		}
 
 		private string ProcessMemberExpression(MemberExpression memberExpression, WhereQueryData data)
 		{
-			var property = memberExpression.Member.Name;
-			var isNullableProperty = memberExpression.Member.DeclaringType.IsGenericType && memberExpression.Member.DeclaringType.GetGenericTypeDefinition() == typeof(Nullable<>);
-			var memberDataType = GetDataType(memberExpression.Member);
+			// Nullable<T>.Value of a column is the column itself
+			if (memberExpression.Member.Name == nameof(Nullable<int>.Value)
+				&& memberExpression.Member.DeclaringType.IsGenericType
+				&& memberExpression.Member.DeclaringType.GetGenericTypeDefinition() == typeof(Nullable<>))
+			{
+				return ProcessExpression(memberExpression.Expression, data, memberExpression.NodeType);
+			}
 
+			// The member depends on the lambda parameter, otherwise it would have been evaluated,
+			// so a type mapping names the table of this member and never that of a captured value
+			var memberDataType = GetDataType(memberExpression.Member);
 			if (memberDataType != default && data.PropertyTypeMappings.ContainsKey(memberDataType))
 			{
 				return data.PropertyTypeMappings[memberDataType];
@@ -201,60 +213,22 @@ namespace Eshava.Storm.Linq.Engines
 
 			var parent = ProcessExpression(memberExpression.Expression, data, memberExpression.NodeType);
 
-			//DisplayClass
-			if (!parent.IsNullOrEmpty() && parent.StartsWith("@") && !property.IsNullOrEmpty())
-			{
-				if (!isNullableProperty)
-				{
-					var parameterName = parent.Substring(1);
-					var value = data.QueryParameter[parameterName];
-
-					var valueProperty = value.GetType().GetProperty(property);
-					var valueField = value.GetType().GetField(property);
-
-					if (valueProperty != null)
-					{
-						data.QueryParameter[parameterName] = valueProperty.GetValue(value);
-					}
-					else if (valueField != null)
-					{
-						data.QueryParameter[parameterName] = valueField.GetValue(value);
-					}
-				}
-
-				return parent;
-			}
-
-			return $"{parent}.{property}";
+			return $"{parent}.{memberExpression.Member.Name}";
 		}
 
 		private string ProcessParameterExpression(ParameterExpression parameterExpression, WhereQueryData data)
 		{
+			if (parameterExpression == data.InnerParameter)
+			{
+				return PARAMETER_PLACEHOLDER;
+			}
+
 			if (data.PropertyTypeMappings.ContainsKey(parameterExpression.Type))
 			{
 				return data.PropertyTypeMappings[parameterExpression.Type];
 			}
 
 			return "";
-		}
-
-		private string ProcessDisplayClassConstantExpression(MemberExpression memberExpression, WhereQueryData data)
-		{
-			var constantExpression = memberExpression.Expression as ConstantExpression;
-			if (constantExpression.Value == default)
-			{
-				return null;
-			}
-
-			var value = GetValueFromDisplayClass(memberExpression.Member, constantExpression);
-			var newConstantExpression = Expression.Constant(value, memberExpression.Type);
-
-			return ProcessExpression(newConstantExpression, data, memberExpression.NodeType);
-		}
-
-		private string ProcessUnaryExpressionConvert(UnaryExpression unaryExpression, WhereQueryData data)
-		{
-			return ProcessExpression(unaryExpression.Operand, data, unaryExpression.NodeType);
 		}
 
 		private string ProcessUnaryExpressionNot(UnaryExpression unaryExpression, WhereQueryData data)
@@ -269,163 +243,232 @@ namespace Eshava.Storm.Linq.Engines
 			return $"NOT({expressionResult})";
 		}
 
-		private string ProcessConstantExpression(ConstantExpression constantExpression, WhereQueryData data)
+		private string ProcessConstantExpression(object value, WhereQueryData data)
 		{
-			if (constantExpression.Value == null)
+			if (value == null)
 			{
 				return null;
 			}
 
-			var parameterName = "@p" + data.Index;
-			if (constantExpression.Value.GetType().GetDataType().IsEnum)
+			// Through the underlying type, so an enum based on long keeps its full range
+			if (value.GetType().IsEnum)
 			{
-				data.QueryParameter.Add("p" + data.Index, Convert.ToInt32(constantExpression.Value));
-			}
-			else
-			{
-				data.QueryParameter.Add("p" + data.Index, constantExpression.Value);
+				value = Convert.ChangeType(value, Enum.GetUnderlyingType(value.GetType()));
 			}
 
-			data.Index++;
-
-			return parameterName;
+			return "@" + AddParameter(data, value);
 		}
 
 		private string ProcessMethodCallExpression(MethodCallExpression methodCallExpression, WhereQueryData data)
 		{
-			var method = methodCallExpression.Method.Name.ToLower();
-			var rawProperty = "";
-			var value = "";
+			var method = methodCallExpression.Method.Name.ToLowerInvariant();
 
 			if (method == METHOD_ANY)
 			{
 				return ProcessMethodCallExpressionAny(methodCallExpression, data);
 			}
 
-			if (method == METHOD_CONTAINS && methodCallExpression.Arguments.Count >= 2)
+			if (method == METHOD_TOUPPER || method == METHOD_TOLOWER)
 			{
-				//DisplayClass
-				rawProperty = ProcessExpression(methodCallExpression.Arguments[0], data, methodCallExpression.NodeType);
-				value = ProcessExpression(methodCallExpression.Arguments[1], data, methodCallExpression.NodeType);
-			}
-			else if (method == METHOD_TOUPPER)
-			{
-				return ProcessMethodCallExpressionToUpper(methodCallExpression, data);
-			}
-			else if (method == METHOD_TOLOWER)
-			{
-				return ProcessMethodCallExpressionToLower(methodCallExpression, data);
-			}
-			else if (methodCallExpression.Object is null)
-			{
-				return ProcessExpression(methodCallExpression.Arguments[0], data, methodCallExpression.NodeType);
-			}
-			else
-			{
-				rawProperty = ProcessExpression(methodCallExpression.Object, data, methodCallExpression.NodeType);
-				value = ProcessExpression(methodCallExpression.Arguments[0], data, methodCallExpression.NodeType);
+				// Case is left to the collation of the column
+				return ProcessExpression(methodCallExpression.Object, data, methodCallExpression.NodeType);
 			}
 
-			var property = "";
-			if (method == METHOD_CONTAINS && rawProperty.StartsWith("@"))
+			if (methodCallExpression.Object is null)
 			{
-				rawProperty = rawProperty.Replace("@", "");
-				property = MapPropertyPath(data, value);
-				method = METHOD_CONTAINEDIN;
+				// Enumerable.Contains(values, p.Property), and since C# 14 MemoryExtensions.Contains(values, p.Property, comparer) for arrays
+				if (method == METHOD_CONTAINS && methodCallExpression.Arguments.Count >= 2)
+				{
+					return ProcessContainedIn(methodCallExpression.Arguments[0], methodCallExpression.Arguments[1], data);
+				}
 
-				data.QueryParameter.Add(rawProperty + "Array", data.QueryParameter[rawProperty]);
-				data.QueryParameter.Remove(rawProperty);
-				value = $"@{rawProperty}Array";
+				throw new NotSupportedException($"The method {methodCallExpression.Method.DeclaringType?.Name}.{methodCallExpression.Method.Name} in {methodCallExpression} cannot be translated to SQL.");
 			}
-			else
+
+			if (method == METHOD_CONTAINS && IsEvaluable(methodCallExpression.Object))
 			{
-				property = MapPropertyPath(data, rawProperty);
+				if (methodCallExpression.Object.Type == typeof(string))
+				{
+					throw new NotSupportedException($"A column cannot be searched for inside a value, as in {methodCallExpression}.");
+				}
+
+				// values.Contains(p.Property) on a list
+				return ProcessContainedIn(methodCallExpression.Object, methodCallExpression.Arguments[0], data);
 			}
+
+			var property = MapPropertyPath(data, ProcessExpression(methodCallExpression.Object, data, methodCallExpression.NodeType));
 
 			switch (method)
 			{
 				case METHOD_CONTAINS:
-					ManipulateParameterValue(data, value, v => $"%{v}%");
-
-					return $"{property} LIKE {value}";
+					return $"{property} LIKE {GetLikeParameter(methodCallExpression, data, value => $"%{value}%")}";
 				case METHOD_STARTSWITH:
-					ManipulateParameterValue(data, value, v => $"{v}%");
-
-					return $"{property} LIKE {value}";
+					return $"{property} LIKE {GetLikeParameter(methodCallExpression, data, value => $"{value}%")}";
 				case METHOD_ENDSWITH:
-					ManipulateParameterValue(data, value, v => $"%{v}");
-
-					return $"{property} LIKE {value}";
+					return $"{property} LIKE {GetLikeParameter(methodCallExpression, data, value => $"%{value}")}";
 				case METHOD_COMPARETO:
 					// EF Core compatibility
+					var compareValue = ProcessExpression(methodCallExpression.Arguments[0], data, methodCallExpression.NodeType);
 
-					return $"(CASE WHEN {property} = {value} THEN 0 WHEN {property} > {value} THEN 1 ELSE -1 END)";
-				case METHOD_CONTAINEDIN:
-
-					return $"{property} IN {value}";
+					return $"(CASE WHEN {property} = {compareValue} THEN 0 WHEN {property} > {compareValue} THEN 1 ELSE -1 END)";
 			}
 
-			return "";
+			throw new NotSupportedException($"The method {methodCallExpression.Method.Name} in {methodCallExpression} cannot be translated to SQL.");
+		}
+
+		private string ProcessContainedIn(Expression valuesExpression, Expression itemExpression, WhereQueryData data)
+		{
+			valuesExpression = UnwrapSpanConversion(valuesExpression);
+			if (!IsEvaluable(valuesExpression))
+			{
+				throw new NotSupportedException($"Only a list of values can be searched, not {valuesExpression}.");
+			}
+
+			var values = Evaluate(valuesExpression) as IEnumerable;
+			if (values == null || !values.Cast<object>().Any())
+			{
+				// Nothing is contained in an empty list
+				return SQL_FALSE;
+			}
+
+			var property = MapPropertyPath(data, ProcessExpression(itemExpression, data, ExpressionType.Call));
+			var parameterName = AddParameter(data, values, "Array");
+
+			return $"{property} IN @{parameterName}";
+		}
+
+		private string GetLikeParameter(MethodCallExpression methodCallExpression, WhereQueryData data, Func<string, string> pattern)
+		{
+			var argument = methodCallExpression.Arguments[0];
+			if (!IsEvaluable(argument))
+			{
+				throw new NotSupportedException($"The search term of {methodCallExpression} has to be a value, not a column.");
+			}
+
+			var value = Evaluate(argument);
+			if (value == null)
+			{
+				throw new ArgumentNullException(nameof(methodCallExpression), $"The search term of {methodCallExpression} is null.");
+			}
+
+			// The value is searched for as it is: the wildcards of LIKE in it are escaped
+			var escapedValue = value.ToString()
+				.Replace("[", "[[]")
+				.Replace("%", "[%]")
+				.Replace("_", "[_]");
+
+			return "@" + AddParameter(data, pattern(escapedValue));
 		}
 
 		private string ProcessMethodCallExpressionAny(MethodCallExpression methodCallExpression, WhereQueryData data)
 		{
-			// Display Class
-			var memberExpression = methodCallExpression.Arguments.First() as MemberExpression;
-			var constantExpression = memberExpression.Expression as ConstantExpression;
-			var enumerable = GetValueFromDisplayClass(memberExpression.Member, constantExpression) as System.Collections.IEnumerable;
-
-			// Inner function expression
-			var lambdaExpression = methodCallExpression.Arguments.Last() as LambdaExpression;
-			var lambdaAsQuery = ProcessExpression(lambdaExpression.Body, data, methodCallExpression.NodeType);
-
-			var queryParts = new List<string>();
-			foreach (var item in enumerable)
+			var source = UnwrapSpanConversion(methodCallExpression.Arguments.First());
+			if (!IsEvaluable(source))
 			{
-				var parameterName = "p" + data.Index;
-				data.QueryParameter.Add(parameterName, item);
-				data.Index++;
+				throw new NotSupportedException($"Any can only be translated over a list of values, not over {source}.");
+			}
 
-				queryParts.Add(lambdaAsQuery.Replace(PARAMETER_PLACEHOLDER, "@" + parameterName));
+			var lambdaExpression = methodCallExpression.Arguments.Last() as LambdaExpression;
+			if (lambdaExpression == null)
+			{
+				throw new NotSupportedException($"Any can only be translated with a lambda expression, as in {methodCallExpression}.");
+			}
+
+			var items = (Evaluate(source) as IEnumerable)?.Cast<object>().ToList() ?? new List<object>();
+			if (items.Count == 0)
+			{
+				// Any over an empty list is false
+				return SQL_FALSE;
+			}
+
+			var innerParameter = lambdaExpression.Parameters[0];
+			var queryParts = new List<string>();
+
+			if (ParameterUsageCounter.IsOnlyComparedDirectly(lambdaExpression.Body, innerParameter))
+			{
+				// Translated once; each item gets one parameter that replaces every use of the lambda parameter
+				data.InnerParameter = innerParameter;
+				var lambdaAsQuery = ProcessCondition(lambdaExpression.Body, data);
+				data.InnerParameter = null;
+
+				foreach (var item in items)
+				{
+					queryParts.Add(lambdaAsQuery.Replace(PARAMETER_PLACEHOLDER, "@" + AddParameter(data, item)));
+				}
+			}
+			else
+			{
+				// The item is used in another way, v => v.Id == p.Id: the lambda is translated per item
+				foreach (var item in items)
+				{
+					var body = ParameterReplacer.Replace(lambdaExpression.Body, innerParameter, Expression.Constant(item, innerParameter.Type));
+					queryParts.Add(ProcessCondition(body, data));
+				}
 			}
 
 			return $"({String.Join(" OR ", queryParts)})";
 		}
 
-		private string ProcessMethodCallExpressionToUpper(MethodCallExpression methodCallExpression, WhereQueryData data)
+		/// <summary>
+		/// Adds a parameter under the next name the query parameters do not use yet
+		/// </summary>
+		private static string AddParameter(WhereQueryData data, object value, string suffix = "")
 		{
-			// Ignore to upper call
-
-			return ProcessExpression(methodCallExpression.Object, data, methodCallExpression.NodeType);
-		}
-
-		private string ProcessMethodCallExpressionToLower(MethodCallExpression methodCallExpression, WhereQueryData data)
-		{
-			// Ignore to lower call
-
-			return ProcessExpression(methodCallExpression.Object, data, methodCallExpression.NodeType);
-		}
-
-		private void ManipulateParameterValue(WhereQueryData data, string parameterName, Func<object, string> manipulate)
-		{
-			parameterName = parameterName.Replace("@", "");
-
-			data.QueryParameter[parameterName] = manipulate(data.QueryParameter[parameterName]);
-		}
-
-		private object GetValueFromDisplayClass(MemberInfo memberInfo, ConstantExpression constantExpression)
-		{
-			var value = default(object);
-			if (memberInfo.MemberType == MemberTypes.Field)
+			string parameterName;
+			do
 			{
-				value = ((FieldInfo)memberInfo).GetValue(constantExpression?.Value);
+				parameterName = "p" + data.Index + suffix;
+				data.Index++;
 			}
-			else if (memberInfo.MemberType == MemberTypes.Property)
+			while (data.QueryParameter.ContainsKey(parameterName));
+
+			data.QueryParameter.Add(parameterName, value);
+
+			return parameterName;
+		}
+
+		/// <summary>
+		/// Since C# 14 an array passed to Contains is converted implicitly into a span, which cannot be boxed and evaluated;
+		/// the array itself is the list of values
+		/// </summary>
+		private static Expression UnwrapSpanConversion(Expression expression)
+		{
+			while (IsSpanConversion(expression))
 			{
-				value = ((PropertyInfo)memberInfo).GetValue(constantExpression?.Value);
+				expression = ((MethodCallExpression)expression).Arguments[0];
 			}
 
-			return value;
+			return expression;
+		}
+
+		private static bool IsSpanConversion(Expression expression)
+		{
+			return expression is MethodCallExpression methodCallExpression
+				&& methodCallExpression.Method.Name == "op_Implicit"
+				&& methodCallExpression.Arguments.Count == 1
+				&& (methodCallExpression.Type.Name.StartsWith("ReadOnlySpan", StringComparison.Ordinal) || methodCallExpression.Type.Name.StartsWith("Span", StringComparison.Ordinal));
+		}
+
+		private static bool IsEvaluable(Expression expression)
+		{
+			return expression.NodeType != ExpressionType.Lambda
+				&& expression.NodeType != ExpressionType.Quote
+				&& !ParameterFinder.ContainsParameter(expression);
+		}
+
+		private static object Evaluate(Expression expression)
+		{
+			switch (expression)
+			{
+				case ConstantExpression constantExpression:
+					return constantExpression.Value;
+				case MemberExpression memberExpression when memberExpression.Member is FieldInfo fieldInfo:
+					return fieldInfo.GetValue(memberExpression.Expression == null ? null : Evaluate(memberExpression.Expression));
+				case MemberExpression memberExpression when memberExpression.Member is PropertyInfo propertyInfo:
+					return propertyInfo.GetValue(memberExpression.Expression == null ? null : Evaluate(memberExpression.Expression));
+			}
+
+			return Expression.Lambda<Func<object>>(Expression.Convert(expression, typeof(object))).Compile()();
 		}
 
 		private Type GetDataType(MemberInfo memberInfo)
@@ -452,13 +495,9 @@ namespace Eshava.Storm.Linq.Engines
 				return result;
 			}
 
-			// the member expression is properly a boolean expression like "p => p.PropertyName", 
+			// the member expression is properly a boolean expression like "p => p.PropertyName",
 			// so that the expression have to be transformed to "p => p.PropertyName == true"
-			var index = data.Index;
-			data.QueryParameter.Add("p" + index, true);
-			data.Index++;
-
-			return $"({MapPropertyPath(data, result)} = @p{index})";
+			return $"({MapPropertyPath(data, result)} = @{AddParameter(data, true)})";
 		}
 
 		private static bool IsCombinationType(ExpressionType expressionType)

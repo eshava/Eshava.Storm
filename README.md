@@ -147,8 +147,27 @@ connection.QueryAsync<Guid>("SELECT Id FROM alphas where Gamma in @Gammas", new 
 Will be translated to:
 
 ```sql
-SELECT Id FROM alphas where Gamme in (@Gammas_p1, @Gammas_p2, @Gammas_p3)" -- @Gammas_p0 = 3 , @Gammas_p1 = 5 , @Gammas_p2 = 7
+SELECT Id FROM alphas where Gamma in (@Gammas_p0, @Gammas_p1, @Gammas_p2) -- @Gammas_p0 = 3 , @Gammas_p1 = 5 , @Gammas_p2 = 7
 ```
+
+An empty list becomes an empty set, `(SELECT NULL WHERE 1 = 0)`: `IN` matches no row and `NOT IN`
+matches every row. Each element whose type has a registered type handler is set through that
+handler. A `byte[]` is a single binary value, not a list.
+
+
+Interpolated SQL
+----------------
+
+On .NET 6 and later a statement can be written as an interpolated string. A hole directly preceded
+by `@` becomes a parameter; any other hole is inserted as text and is meant for identifiers only.
+
+```csharp
+SqlInterpolatedStringHandler query = $"SELECT * FROM {TypeAnalyzer.GetTableName<Alpha>()} WHERE Beta = @{beta}";
+var alphas = await connection.QueryAsync<Alpha>(ref query);
+```
+
+**Never put a value into a hole without `@`.** It is not escaped, so a value that comes from outside
+the application opens the statement to SQL injection.
 
 
 Owns One Property Support (entity framework behavior)

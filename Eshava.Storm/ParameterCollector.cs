@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Eshava.Storm.Constants;
 using Eshava.Storm.Extensions;
 using Eshava.Storm.Interfaces;
@@ -12,6 +13,8 @@ namespace Eshava.Storm
 {
 	internal class ParameterCollector
 	{
+		private const string EMPTYSET = "(SELECT NULL WHERE 1 = 0)";
+
 		private readonly Dictionary<string, ParameterInfo> _parameters = new Dictionary<string, ParameterInfo>();
 
 		/// <summary>
@@ -65,6 +68,17 @@ namespace Eshava.Storm
 				return;
 			}
 
+			// A dictionary with values of any type, such as Dictionary<string, int>
+			if (parameter is IDictionary untypedDictionary)
+			{
+				foreach (DictionaryEntry entry in untypedDictionary)
+				{
+					Add(entry.Key.ToString(), entry.Value, null, null, null);
+				}
+
+				return;
+			}
+
 			var parameterPropertyInfos = parameter.GetType().GetProperties();
 			foreach (var propertyInfo in parameterPropertyInfos)
 			{
@@ -111,7 +125,8 @@ namespace Eshava.Storm
 				dbType = parameter.Value.GetType().LookupDbType(parameterName, true, out handler);
 			}
 
-			if (handler == null && ((parameter.Value?.GetType().ImplementsIEnumerable() ?? false) || (parameter.Value?.GetType().IsArray ?? false)))
+			var valueType = parameter.Value?.GetType();
+			if (handler == null && valueType != null && !valueType.IsByteArray() && (valueType.ImplementsIEnumerable() || valueType.IsArray))
 			{
 				AddEnumerationParameter(parameter, command, dbType);
 
@@ -139,7 +154,8 @@ namespace Eshava.Storm
 			}
 			else
 			{
-				if (dbType != null)
+				// DbType.Object only says that the handler decides; set explicitly, SQL Server would turn it into sql_variant
+				if (dbType != null && dbType != DbType.Object)
 				{
 					dataParameter.DbType = dbType.Value;
 				}
@@ -157,6 +173,7 @@ namespace Eshava.Storm
 
 		private void AddEnumerationParameter(ParameterInfo parameter, IDbCommand command, DbType? dbType)
 		{
+			var parameterName = parameter.Name.Clean();
 			var parameterNames = new List<string>();
 			var valueEnumerable = (IEnumerable)parameter.Value;
 			var index = 0;
@@ -165,7 +182,7 @@ namespace Eshava.Storm
 			{
 				var newParameter = new ParameterInfo
 				{
-					Name = $"{parameter.Name}_p{index}",
+					Name = $"{parameterName}_p{index}",
 					Value = value,
 					// An element with a type handler has to look it up itself, a given DbType would skip that lookup
 					DbType = value != null && value.GetType().HasTypeHandler() ? null : dbType,
@@ -177,10 +194,20 @@ namespace Eshava.Storm
 				index++;
 			}
 
-			if (parameterNames.Count > 0)
-			{
-				command.CommandText = command.CommandText.Replace("@" + parameter.Name, $"({String.Join(",", parameterNames.Select(name => "@" + name))})");
-			}
+			// An empty list is an empty set: IN matches nothing, NOT IN everything
+			var replacement = parameterNames.Count > 0
+				? $"({String.Join(",", parameterNames.Select(name => "@" + name))})"
+				: EMPTYSET;
+
+			command.CommandText = GetParameterTokenRegex(parameterName).Replace(command.CommandText, replacement.Replace("$", "$$"));
+		}
+
+		/// <summary>
+		/// Matches the parameter as a whole token: @Id must not hit @IdName, @Ids or @Id_p0
+		/// </summary>
+		private static Regex GetParameterTokenRegex(string parameterName)
+		{
+			return new Regex($@"(?<![\p{{L}}\p{{N}}_@$#])@{Regex.Escape(parameterName)}(?![\p{{L}}\p{{N}}_@$#])", RegexOptions.CultureInvariant);
 		}
 
 		private void SetBasicParameterInfos(ParameterInfo parameter, IDbDataParameter dataParameter)

@@ -16,20 +16,16 @@ namespace Eshava.Storm.Extensions
 		private static readonly Type _typeOfDateTime = typeof(DateTime);
 		private static readonly Type _typeOfTimeSpan = typeof(TimeSpan);
 		private static readonly Type _typeOfByteArray = typeof(byte[]);
+		private static readonly Type _typeOfDateTimeOffset = typeof(DateTimeOffset);
 
 		internal static DbType LookupDbType(this Type type, string name, bool demand, out ITypeHandler handler)
 		{
 			DbType dbType;
-			handler = null;
-			var nullUnderlyingType = type.GetDataType();
-			if (nullUnderlyingType != null)
-			{
-				type = nullUnderlyingType;
-			}
+			type = type.GetDataType();
 
-			if (TypeHandlerMap.Map.TryGetValue(type, out handler))
+			if (TypeHandlerMap.TryGetHandler(type, out handler))
 			{
-				if (type.GetDataType() == _typeOfDateTime)
+				if (type == _typeOfDateTime)
 				{
 					return Settings.EnableDateTimeHighAccuracy ? DbType.DateTime2 : DbType.DateTime;
 				}
@@ -37,14 +33,25 @@ namespace Eshava.Storm.Extensions
 				return DbType.Object;
 			}
 
+			// A byte array is a binary value, not an enumeration of bytes
+			if (type == _typeOfByteArray)
+			{
+				return DbType.Binary;
+			}
+
 			if (type.ImplementsIEnumerable())
 			{
-				type = type.GetDataTypeFromIEnumerable();
+				type = type.GetDataTypeFromIEnumerable().GetDataType();
 
 				// Each element is set through the handler of its own type, the enumeration itself has none
 				if (type.HasTypeHandler())
 				{
 					return DbType.Object;
+				}
+
+				if (type == _typeOfByteArray)
+				{
+					return DbType.Binary;
 				}
 			}
 
@@ -113,7 +120,12 @@ namespace Eshava.Storm.Extensions
 
 		internal static bool HasTypeHandler(this Type type)
 		{
-			return TypeHandlerMap.Map.ContainsKey(type.GetDataType());
+			return TypeHandlerMap.TryGetHandler(type.GetDataType(), out _);
+		}
+
+		internal static bool IsByteArray(this Type type)
+		{
+			return type == _typeOfByteArray;
 		}
 
 		internal static bool IsClass(this Type type)
@@ -177,7 +189,10 @@ namespace Eshava.Storm.Extensions
 				|| propertyType == _typeOfGuid
 				|| propertyType == _typeOfDateTime
 				|| propertyType == _typeOfTimeSpan
-				|| propertyType == _typeOfByteArray)
+				|| propertyType == _typeOfDateTimeOffset
+				|| propertyType == _typeOfByteArray
+				|| propertyType.FullName == DefaultNames.DATEONLY
+				|| propertyType.FullName == DefaultNames.TIMEONLY)
 			{
 				return true;
 			}

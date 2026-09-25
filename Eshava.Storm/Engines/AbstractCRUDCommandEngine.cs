@@ -26,7 +26,7 @@ namespace Eshava.Storm.Engines
 		{
 			var type = CheckCommandConditions(commandDefinition, "insert");
 
-			var entityTypeResult = EntityCache.GetEntity(type) ?? TypeAnalyzer.AnalyzeType(type);
+			var entityTypeResult = TypeAnalyzer.GetOrAnalyzeEntity(type);
 			if (!entityTypeResult.HasPrimaryKey())
 			{
 				throw new ArgumentException("At least one key column property must be defined.");
@@ -57,18 +57,10 @@ namespace Eshava.Storm.Engines
 					sqlValues.Append(",");
 				}
 
-				sqlColumns.Append($"[");
-				sqlValues.Append("@");
-				if (!property.Prefix.IsNullOrEmpty())
-				{
-					sqlColumns.Append(property.Prefix);
-					sqlValues.Append(property.Prefix);
-				}
+				sqlColumns.Append(QuoteIdentifier($"{property.Prefix}{property.ColumnName}"));
+				sqlValues.Append($"@{property.Prefix}{property.PropertyInfo.Name}");
 
-				sqlColumns.Append($"{property.ColumnName}]");
-				sqlValues.Append(property.PropertyInfo.Name);
-
-				parameters.Add(new KeyValuePair<string, object>($"{property.Prefix}{property.PropertyInfo.Name}", property.PropertyInfo.GetValue(property.Entity)));
+				parameters.Add(new KeyValuePair<string, object>($"{property.Prefix}{property.PropertyInfo.Name}", property.GetValue()));
 			}
 
 			sql.Append("INSERT INTO ");
@@ -98,12 +90,19 @@ namespace Eshava.Storm.Engines
 		{
 			var type = CheckCommandConditions(commandDefinition, "update", partialEntity, patchProperties);
 
-			var entityTypeResult = EntityCache.GetEntity(type) ?? TypeAnalyzer.AnalyzeType(type);
+			var entityTypeResult = TypeAnalyzer.GetOrAnalyzeEntity(type);
 			var keyColumns = GetKeyColumns(type, partialEntity?.GetType(), patchProperties?.Select(p => p.Key).ToList());
 
 			if (!keyColumns.Any())
 			{
 				throw new ArgumentException("At least one key column property must be defined.");
+			}
+
+			// A partial update or patch without every key column would update every row matching the others
+			var keyColumnCount = entityTypeResult.GetProperties().Count(property => property.IsPrimaryKey);
+			if (keyColumns.Count() < keyColumnCount)
+			{
+				throw new ArgumentException($"All {keyColumnCount} key column properties must be given to update {type.Name}.");
 			}
 
 			if (partialEntity != default || patchProperties != default)
@@ -145,30 +144,26 @@ namespace Eshava.Storm.Engines
 					sql.Append(",");
 				}
 
-				sql.Append($"[");
-				if (!property.Prefix.IsNullOrEmpty())
-				{
-					sql.Append(property.Prefix);
-				}
-
-				sql.Append($"{property.ColumnName}]");
+				sql.Append(QuoteIdentifier($"{property.Prefix}{property.ColumnName}"));
 				sql.Append(" = @");
-
-				if (!property.Prefix.IsNullOrEmpty())
-				{
-					sql.Append(property.Prefix);
-				}
 
 				if (property.PropertyInfo == default && property.Entity?.GetType() == _patchPropertyType)
 				{
-					sql.AppendLine(property.ColumnName);
-					parameters.Add(new KeyValuePair<string, object>($"{property.Prefix}{property.ColumnName}", ((KeyValuePair<string, object>)property.Entity).Value));
+					// The key of a patch value is the property name including the prefix of owned objects, a valid parameter name
+					var patchProperty = (KeyValuePair<string, object>)property.Entity;
+					sql.AppendLine(patchProperty.Key);
+					parameters.Add(new KeyValuePair<string, object>(patchProperty.Key, patchProperty.Value));
 
 					continue;
 				}
 
-				sql.AppendLine(property.PropertyInfo?.Name);
-				parameters.Add(new KeyValuePair<string, object>($"{property.Prefix}{property.PropertyInfo.Name}", property.PropertyInfo.GetValue(property.Entity)));
+				sql.AppendLine($"{property.Prefix}{property.PropertyInfo.Name}");
+				parameters.Add(new KeyValuePair<string, object>($"{property.Prefix}{property.PropertyInfo.Name}", property.GetValue()));
+			}
+
+			if (firstColumn)
+			{
+				throw new ArgumentException($"There is no column to update for {type.Name}: every given property is a key column or not mapped.");
 			}
 
 			AppendWhereCondition(new WhereCondition
@@ -187,7 +182,7 @@ namespace Eshava.Storm.Engines
 		public virtual void ProcessDeleteRequest<T>(CommandDefinition<T> commandDefinition) where T : class
 		{
 			var type = CheckCommandConditions(commandDefinition, "delete");
-			var entityTypeResult = EntityCache.GetEntity(type) ?? TypeAnalyzer.AnalyzeType(type);
+			var entityTypeResult = TypeAnalyzer.GetOrAnalyzeEntity(type);
 			var keyColumns = GetKeyColumns(type);
 
 			if (!keyColumns.Any())
@@ -234,7 +229,7 @@ namespace Eshava.Storm.Engines
 			if (keyColumns.Count() == 1)
 			{
 				var keyColumn = keyColumns.First();
-				query += $" WHERE {keyColumn.ColumnName} = @{keyColumn.PropertyInfo.Name}";
+				query += $" WHERE {QuoteIdentifier(keyColumn.ColumnName)} = @{keyColumn.PropertyInfo.Name}";
 				parameters.Add(new KeyValuePair<string, object>(keyColumn.PropertyInfo.Name, id));
 			}
 			else
@@ -246,7 +241,7 @@ namespace Eshava.Storm.Engines
 					parameters.Add(new KeyValuePair<string, object>(keyColumn.PropertyInfo.Name, propertyValue));
 
 					var prefix = firstColumn ? "WHERE" : "AND";
-					query += $" {prefix} {keyColumn.ColumnName} = @{keyColumn.PropertyInfo.Name}";
+					query += $" {prefix} {QuoteIdentifier(keyColumn.ColumnName)} = @{keyColumn.PropertyInfo.Name}";
 					firstColumn = false;
 				}
 			}
@@ -291,7 +286,7 @@ namespace Eshava.Storm.Engines
 
 		protected IEnumerable<KeyProperty> GetKeyColumns(Type type, Type partialType = null, IEnumerable<string> patchProperties = null)
 		{
-			var entityTypeResult = MetaData.Models.EntityCache.GetEntity(type) ?? MetaData.TypeAnalyzer.AnalyzeType(type);
+			var entityTypeResult = MetaData.TypeAnalyzer.GetOrAnalyzeEntity(type);
 
 			var keyColumns = new List<KeyProperty>();
 			var partialPropertyInfos = partialType?.GetProperties().Where(p => p.CanRead).ToList();
@@ -313,6 +308,7 @@ namespace Eshava.Storm.Engines
 							PropertyInfo = null,
 							AutoGenerated = property.AutoGeneratedOption != DatabaseGeneratedOption.None,
 							ColumnName = property.ColumnName,
+							PropertyName = property.Name
 						});
 					}
 
@@ -325,7 +321,8 @@ namespace Eshava.Storm.Engines
 					{
 						PropertyInfo = property.PropertyInfo,
 						AutoGenerated = property.AutoGeneratedOption != DatabaseGeneratedOption.None,
-						ColumnName = property.ColumnName
+						ColumnName = property.ColumnName,
+						PropertyName = property.Name
 					});
 
 					continue;
@@ -338,7 +335,8 @@ namespace Eshava.Storm.Engines
 					{
 						PropertyInfo = partialPropertyInfo,
 						AutoGenerated = property.AutoGeneratedOption != DatabaseGeneratedOption.None,
-						ColumnName = property.ColumnName
+						ColumnName = property.ColumnName,
+						PropertyName = property.Name
 					});
 				}
 			}
@@ -348,7 +346,7 @@ namespace Eshava.Storm.Engines
 
 		protected IEnumerable<Models.Property> GetProperties(PropertyRequest request)
 		{
-			request.EntityTypeResult = request.EntityTypeResult ?? MetaData.Models.EntityCache.GetEntity(request.Type) ?? MetaData.TypeAnalyzer.AnalyzeType(request.Type);
+			request.EntityTypeResult = request.EntityTypeResult ?? MetaData.TypeAnalyzer.GetOrAnalyzeEntity(request.Type);
 			var properties = new List<Models.Property>();
 			var propertyInfosPartial = request.PartialEntity?.GetType().GetProperties().Where(p => p.CanRead).ToList();
 
@@ -387,6 +385,8 @@ namespace Eshava.Storm.Engines
 							Prefix = request.NamePrefix,
 							PropertyInfo = property.PropertyInfo,
 							Entity = request.Entity,
+							// A simple type can have a handler as well, the bulk insert has to apply it like a parameter does
+							TypeHandler = TypeHandlerMap.Map.TryGetValue(property.Type.GetDataType(), out var typeHandler) ? typeHandler : null,
 							ColumnName = property.ColumnName
 						});
 					}
@@ -410,7 +410,7 @@ namespace Eshava.Storm.Engines
 
 				if (property.IsOwnsOne)
 				{
-					var ownsOneEntity = property.PropertyInfo.GetValue(request.Entity);
+					var ownsOneEntity = request.Entity == null ? null : property.PropertyInfo.GetValue(request.Entity);
 
 					if (request.PatchProperties != default)
 					{
@@ -432,11 +432,7 @@ namespace Eshava.Storm.Engines
 
 					if (request.PartialEntity == default)
 					{
-						if (ownsOneEntity == default)
-						{
-							continue;
-						}
-
+						// An owned object that is not set still has its columns: they are written as NULL
 						properties.AddRange(GetProperties(new PropertyRequest
 						{
 							Type = property.Type,
@@ -538,33 +534,28 @@ namespace Eshava.Storm.Engines
 					condition.Query.Append("AND ");
 				}
 
+				// A patch names its values by property, the column can be named differently
+				var value = property.PropertyInfo == default
+					? patchProperties.First(p => p.Key == property.PropertyName).Value
+					: property.PropertyInfo.GetValue(entity);
+
 				condition.Query.Append(condition.TableName);
 				condition.Query.Append(".");
-				condition.Query.Append(property.ColumnName);
-				if (property.PropertyInfo?.PropertyType.ImplementsIEnumerable() ?? false
-					|| (patchProperties != default && patchProperties.First(p => p.Key == property.ColumnName).Value.GetType().ImplementsIEnumerable()))
-				{
-					condition.Query.Append(" IN @");
-				}
-				else
-				{
-					condition.Query.Append(" = @");
-				}
+				condition.Query.Append(QuoteIdentifier(property.ColumnName));
+				var isList = value != null && !value.GetType().IsByteArray() && value.GetType().ImplementsIEnumerable();
+				condition.Query.Append(isList ? " IN @" : " = @");
+				condition.Query.AppendLine(property.PropertyName);
 
-				if (property.PropertyInfo == default)
-				{
-					condition.Query.AppendLine(property.ColumnName);
-
-					condition.Parameters.Add(new KeyValuePair<string, object>(property.ColumnName, patchProperties.First(p => p.Key == property.ColumnName).Value));
-				}
-				else
-				{
-					condition.Query.AppendLine(property.PropertyInfo.Name);
-
-					condition.Parameters.Add(new KeyValuePair<string, object>(property.PropertyInfo.Name, property.PropertyInfo.GetValue(entity)));
-				}
-
+				condition.Parameters.Add(new KeyValuePair<string, object>(property.PropertyName, value));
 			}
+		}
+
+		/// <summary>
+		/// Quotes a column name; both SQL Server and SQLite accept square brackets
+		/// </summary>
+		protected static string QuoteIdentifier(string name)
+		{
+			return $"[{name.Replace("]", "]]")}]";
 		}
 	}
 }

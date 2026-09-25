@@ -6,7 +6,8 @@ namespace Eshava.Storm.Models
 {
 	internal static class DbTypeMap
 	{
-		internal static Dictionary<Type, DbType> Map => new Dictionary<Type, DbType>
+		// Built once; the map is only ever read
+		internal static Dictionary<Type, DbType> Map { get; } = new Dictionary<Type, DbType>
 		{
 			[typeof(byte)] = DbType.Byte,
 			[typeof(sbyte)] = DbType.SByte,
@@ -42,6 +43,12 @@ namespace Eshava.Storm.Models
 			[typeof(Guid?)] = DbType.Guid,
 			[typeof(DateTimeOffset?)] = DbType.DateTimeOffset,
 			[typeof(TimeSpan?)] = DbType.Time,
+#if NET6_0_OR_GREATER
+			[typeof(DateOnly)] = DbType.Date,
+			[typeof(TimeOnly)] = DbType.Time,
+			[typeof(DateOnly?)] = DbType.Date,
+			[typeof(TimeOnly?)] = DbType.Time,
+#endif
 			[typeof(object)] = DbType.Object
 		};
 	}
