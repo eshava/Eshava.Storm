@@ -88,6 +88,11 @@ namespace Eshava.Storm
 			{
 				convertedValue = DateTimeOffset.Parse(dateTimeOffsetText, CultureInfo.InvariantCulture);
 			}
+			else if (type == _typeOfDateTimeOffset && value is DateTime instant)
+			{
+				// PostgreSQL returns timestamp with time zone as a DateTime in UTC; a value without kind is taken as UTC as well
+				convertedValue = new DateTimeOffset(instant.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(instant, DateTimeKind.Utc) : instant);
+			}
 #if NET6_0_OR_GREATER
 			else if (type == typeof(DateOnly))
 			{

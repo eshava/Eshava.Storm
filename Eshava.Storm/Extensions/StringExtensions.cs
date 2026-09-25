@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Eshava.Storm.Constants;
+using Eshava.Storm.Dialects;
 
 namespace Eshava.Storm.Extensions
 {
@@ -348,12 +349,49 @@ namespace Eshava.Storm.Extensions
 			var tableParts = tableName.ToLowerInvariant()
 				.Replace("[", "")
 				.Replace("]", "")
+				.Replace("\"", "")
 				.Trim()
 				.Split('.');
 
+			// A table named without schema is in the default schema of the dialect, as the reader reports it
 			return tableParts.Length == 1
-				? ("dbo", tableParts[0])
+				? (SqlDialects.Current.DefaultSchema, tableParts[0])
 				: (tableParts[tableParts.Length - 2], tableParts[tableParts.Length - 1]);
+		}
+
+		/// <summary>
+		/// Writes names quoted with double quotes, as PostgreSQL quotes them, in square brackets, so the analysis
+		/// of a statement knows one form only. String literals are left alone.
+		/// </summary>
+		internal static string NormalizeQuotedIdentifiers(this string sql)
+		{
+			if (sql.IsNullOrEmpty() || sql.IndexOf('"') < 0)
+			{
+				return sql;
+			}
+
+			var normalized = new System.Text.StringBuilder(sql.Length);
+			var inLiteral = false;
+			var inQuotedName = false;
+
+			foreach (var character in sql)
+			{
+				if (character == '\'' && !inQuotedName)
+				{
+					inLiteral = !inLiteral;
+				}
+				else if (character == '"' && !inLiteral)
+				{
+					normalized.Append(inQuotedName ? ']' : '[');
+					inQuotedName = !inQuotedName;
+
+					continue;
+				}
+
+				normalized.Append(character);
+			}
+
+			return normalized.ToString();
 		}
 
 		internal static string CleanTableAlias(this string tableName)
@@ -362,6 +400,7 @@ namespace Eshava.Storm.Extensions
 				.ToLowerInvariant()
 				.Replace("[", "")
 				.Replace("]", "")
+				.Replace("\"", "")
 				.Trim()
 				.Split('.')
 				.Last()

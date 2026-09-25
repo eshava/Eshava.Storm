@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using Eshava.Storm.Linq.Enums;
 using Eshava.Storm.Linq.Extensions;
 using Eshava.Storm.Linq.Models;
 using Eshava.Storm.Linq.Visitors;
@@ -22,6 +23,8 @@ namespace Eshava.Storm.Linq.Engines
 		private const string METHOD_TOLOWER = "tolower";
 		private const string SQL_TRUE = "(1 = 1)";
 		private const string SQL_FALSE = "(1 = 0)";
+		private const string SQL_LOWER = "lower";
+		private const string SQL_UPPER = "upper";
 
 		protected const string SQL_AND = "AND";
 
@@ -270,8 +273,12 @@ namespace Eshava.Storm.Linq.Engines
 
 			if (method == METHOD_TOUPPER || method == METHOD_TOLOWER)
 			{
-				// Case is left to the collation of the column
-				return ProcessExpression(methodCallExpression.Object, data, methodCallExpression.NodeType);
+				var column = ProcessExpression(methodCallExpression.Object, data, methodCallExpression.NodeType);
+
+				// Ignored, the case is left to the collation of the column, unless the settings ask for a translation
+				return LinqSettings.IsCaseConversionTranslated
+					? $"{(method == METHOD_TOLOWER ? SQL_LOWER : SQL_UPPER)}({MapPropertyPath(data, column)})"
+					: column;
 			}
 
 			if (methodCallExpression.Object is null)
@@ -296,16 +303,29 @@ namespace Eshava.Storm.Linq.Engines
 				return ProcessContainedIn(methodCallExpression.Object, methodCallExpression.Arguments[0], data);
 			}
 
-			var property = MapPropertyPath(data, ProcessExpression(methodCallExpression.Object, data, methodCallExpression.NodeType));
+			var likeOperator = "LIKE";
+			var searchedExpression = methodCallExpression.Object;
+
+			// On PostgreSQL a search in a lowered or uppered column is ILIKE on the column itself
+			if (IsLikeMethod(method)
+				&& LinqSettings.IsCaseConversionTranslated
+				&& LinqSettings.Dialect == QueryDialect.PostgreSql
+				&& IsCaseConversion(searchedExpression, out var convertedColumn))
+			{
+				likeOperator = "ILIKE";
+				searchedExpression = convertedColumn;
+			}
+
+			var property = MapPropertyPath(data, ProcessExpression(searchedExpression, data, methodCallExpression.NodeType));
 
 			switch (method)
 			{
 				case METHOD_CONTAINS:
-					return $"{property} LIKE {GetLikeParameter(methodCallExpression, data, value => $"%{value}%")}";
+					return $"{property} {likeOperator} {GetLikeParameter(methodCallExpression, data, value => $"%{value}%")}{GetLikeEscapeClause()}";
 				case METHOD_STARTSWITH:
-					return $"{property} LIKE {GetLikeParameter(methodCallExpression, data, value => $"{value}%")}";
+					return $"{property} {likeOperator} {GetLikeParameter(methodCallExpression, data, value => $"{value}%")}{GetLikeEscapeClause()}";
 				case METHOD_ENDSWITH:
-					return $"{property} LIKE {GetLikeParameter(methodCallExpression, data, value => $"%{value}")}";
+					return $"{property} {likeOperator} {GetLikeParameter(methodCallExpression, data, value => $"%{value}")}{GetLikeEscapeClause()}";
 				case METHOD_COMPARETO:
 					// EF Core compatibility
 					var compareValue = ProcessExpression(methodCallExpression.Arguments[0], data, methodCallExpression.NodeType);
@@ -351,13 +371,52 @@ namespace Eshava.Storm.Linq.Engines
 				throw new ArgumentNullException(nameof(methodCallExpression), $"The search term of {methodCallExpression} is null.");
 			}
 
-			// The value is searched for as it is: the wildcards of LIKE in it are escaped
-			var escapedValue = value.ToString()
-				.Replace("[", "[[]")
-				.Replace("%", "[%]")
-				.Replace("_", "[_]");
+			return "@" + AddParameter(data, pattern(EscapeLikeValue(value.ToString())));
+		}
 
-			return "@" + AddParameter(data, pattern(escapedValue));
+		/// <summary>
+		/// The value is searched for as it is: the wildcards of LIKE in it are escaped. SQL Server knows the bracket
+		/// syntax; PostgreSQL uses the backslash, its default escape character; SQLite has neither by default and
+		/// is given the backslash through an ESCAPE clause.
+		/// </summary>
+		private static string EscapeLikeValue(string value)
+		{
+			if (LinqSettings.Dialect == QueryDialect.SqlServer)
+			{
+				return value
+					.Replace("[", "[[]")
+					.Replace("%", "[%]")
+					.Replace("_", "[_]");
+			}
+
+			return value
+				.Replace("\\", "\\\\")
+				.Replace("%", "\\%")
+				.Replace("_", "\\_");
+		}
+
+		private static string GetLikeEscapeClause()
+		{
+			return LinqSettings.Dialect == QueryDialect.Sqlite ? " ESCAPE '\\'" : "";
+		}
+
+		private static bool IsLikeMethod(string method)
+		{
+			return method == METHOD_CONTAINS || method == METHOD_STARTSWITH || method == METHOD_ENDSWITH;
+		}
+
+		private static bool IsCaseConversion(Expression expression, out Expression column)
+		{
+			column = null;
+			if (expression is MethodCallExpression methodCallExpression
+				&& methodCallExpression.Object != null
+				&& methodCallExpression.Arguments.Count == 0
+				&& (methodCallExpression.Method.Name == nameof(String.ToLower) || methodCallExpression.Method.Name == nameof(String.ToUpper)))
+			{
+				column = methodCallExpression.Object;
+			}
+
+			return column != null;
 		}
 
 		private string ProcessMethodCallExpressionAny(MethodCallExpression methodCallExpression, WhereQueryData data)

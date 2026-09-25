@@ -23,5 +23,6 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\Eshava.Storm\Eshava.Storm.csproj" />
+		<ProjectReference Include="..\Eshava.Storm.Linq\Eshava.Storm.Linq.csproj" />
 	</ItemGroup>
 </Project>

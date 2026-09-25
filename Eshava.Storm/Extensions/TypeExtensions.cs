@@ -3,6 +3,7 @@ using System.Collections;
 using System.Data;
 using System.Linq;
 using Eshava.Storm.Constants;
+using Eshava.Storm.Dialects;
 using Eshava.Storm.Interfaces;
 using Eshava.Storm.Models;
 
@@ -18,7 +19,10 @@ namespace Eshava.Storm.Extensions
 		private static readonly Type _typeOfByteArray = typeof(byte[]);
 		private static readonly Type _typeOfDateTimeOffset = typeof(DateTimeOffset);
 
-		internal static DbType LookupDbType(this Type type, string name, bool demand, out ITypeHandler handler)
+		/// <summary>
+		/// The type a parameter value is sent with; null leaves the choice to the provider
+		/// </summary>
+		internal static DbType? LookupDbType(this Type type, string name, bool demand, out ITypeHandler handler)
 		{
 			DbType dbType;
 			type = type.GetDataType();
@@ -27,7 +31,7 @@ namespace Eshava.Storm.Extensions
 			{
 				if (type == _typeOfDateTime)
 				{
-					return Settings.EnableDateTimeHighAccuracy ? DbType.DateTime2 : DbType.DateTime;
+					return SqlDialects.Current.DateTimeDbType;
 				}
 
 				return DbType.Object;
@@ -72,7 +76,7 @@ namespace Eshava.Storm.Extensions
 
 			if (type.GetDataType() == _typeOfDateTime)
 			{
-				return Settings.EnableDateTimeHighAccuracy ? DbType.DateTime2 : DbType.DateTime;
+				return SqlDialects.Current.DateTimeDbType;
 			}
 
 			if (type.FullName == DefaultNames.LINQBINARY)

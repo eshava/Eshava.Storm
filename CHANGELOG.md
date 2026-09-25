@@ -1,8 +1,75 @@
 # Changelog
 
-Notable changes per released version of the two packages of this repository, `Eshava.Storm` and
+Notable changes per released version of the packages of this repository, `Eshava.Storm` and
 `Eshava.Storm.Linq`, newest first. Versions before `Eshava.Storm` 1.0.42 and `Eshava.Storm.Linq` 1.0.15
 are not documented here — the Git history is the source for those.
+
+## Eshava.Storm.Linq 1.1.0
+
+### Added
+
+* **`LinqSettings.Dialect`**, `SqlServer` by default, `Sqlite` and `PostgreSql`. `Eshava.Storm.Linq` does
+  not reference `Eshava.Storm`, so it has settings of its own, set next to `Settings.Dialect` of the
+  core. Named `LinqSettings` and `QueryDialect`, so that both namespaces can be imported together.
+* **Wildcards are escaped per dialect**: brackets on SQL Server, as before; a backslash on PostgreSQL,
+  its default escape character; a backslash and `ESCAPE '\'` on SQLite, whose `LIKE` has no escape
+  character of its own — the brackets never worked there.
+* **`ToLower()` and `ToUpper()` on a column can be translated**: `lower(column)` and `upper(column)` for
+  comparisons and lists, `ILIKE` on PostgreSQL for `Contains`, `StartsWith` and `EndsWith` on a lowered
+  or uppered column. **`LinqSettings.TranslateCaseConversion`** decides: `null`, the default, follows
+  the dialect — ignored on SQL Server and SQLite as before, translated on PostgreSQL, which compares
+  case-sensitively — while `true` and `false` force it for every dialect.
+
+  **Nothing changes for SQL Server**: the calls stay ignored, the bracket escaping stays.
+
+## Eshava.Storm.PostgreSql 1.0.0
+
+### Added
+
+* **The first version: `BulkInsertAsync` for `NpgsqlConnection`**, through binary
+  `COPY … FROM STDIN (FORMAT BINARY)` — the PostgreSQL counterpart of the bulk insert for
+  `SqlConnection`. It writes what `Eshava.Storm` prepares in `BulkInsertRows`, so type handlers, enums,
+  owned objects and generated keys behave as they do for an insert. Requires
+  `Settings.Dialect = SqlDialect.PostgreSql`.
+* **Values are written as the type of their column**, which is read from the table before the copy
+  starts. Binary COPY converts nothing on the server, and a value Npgsql refuses ends the connection:
+  * into `timestamp with time zone` a `DateTime` goes in UTC — a value without kind is taken as UTC,
+    a local one is converted — and a `DateTimeOffset` in UTC;
+  * into `timestamp without time zone` a `DateTime` goes as its wall clock time, without kind.
+* A connection opened by the bulk insert is closed again; a transaction has to belong to the
+  connection. `commandTimeout`, or `Settings.CommandTimeout`, applies to the copy.
+
+## Eshava.Storm 1.1.0
+
+### Added
+
+* **PostgreSQL as a dialect.** `Settings.Dialect` chooses the SQL Storm writes — `SqlServer`, the
+  default, `Sqlite` or `PostgreSql`. For PostgreSQL:
+  * names are written in lower case and quoted, `"items"."name"`, which matches tables created
+    without quotes and hand-written SQL that does not quote;
+  * a table named without schema is in `public`, so the object mapper matches the schema the reader
+    reports;
+  * a generated key is returned by the insert itself, `INSERT … RETURNING`, through a new command
+    engine chosen for an Npgsql connection;
+  * an empty list becomes an empty array of the element type, because PostgreSQL types the `NULL` of
+    the generic empty set as `text`;
+  * a `DateTime` parameter is typed by Npgsql from its kind — `timestamptz` for UTC — and a
+    `DateTimeOffset` is passed in UTC, since `timestamptz` stores the instant, not the offset.
+
+  **Nothing changes for SQL Server and SQLite.** The statements are the same, character for character,
+  which a test pins against the output of 1.0.42.
+* **Names quoted with double quotes are recognised by the object mapper**, as PostgreSQL writes them and
+  as SQL Server accepts them: `FROM "Items" "i"` can be mapped through the alias `i`.
+* **A `DateTime` is read into a `DateTimeOffset` property**, as PostgreSQL returns `timestamptz`. A value
+  without kind is taken as UTC.
+* **`BulkInsertRows`**, what a bulk insert writes independent of the provider: the table, its columns and
+  a row of values per entity, with type handlers applied, enums as their underlying type, owned objects
+  as their columns and the columns of a generated key left out. `Eshava.Storm.PostgreSql` builds on it.
+
+### Changed
+
+* **Table names are stored without quotes** and quoted when SQL is written, in the dialect of the moment.
+  `TypeAnalyzer.GetTableName<T>()` returns the same text as before for SQL Server.
 
 ## Eshava.Storm.Linq 1.0.15
 

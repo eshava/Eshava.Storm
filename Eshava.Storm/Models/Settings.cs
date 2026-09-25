@@ -1,4 +1,5 @@
 ﻿using System.ComponentModel.DataAnnotations.Schema;
+using Eshava.Storm.Enums;
 
 namespace Eshava.Storm
 {
@@ -23,6 +24,7 @@ namespace Eshava.Storm
 			EnableDateTimeHighAccuracy = false;
 			RestrictToRegisteredModels = false;
 			EnableValueReadingBasedOnTableAliasOccurrence = false;
+			Dialect = SqlDialect.SqlServer;
 		}
 
 		/// <summary>
@@ -59,5 +61,16 @@ namespace Eshava.Storm
 		/// Default: false
 		/// </summary>
 		public static bool EnableValueReadingBasedOnTableAliasOccurrence { get; set; }
+
+		/// <summary>
+		/// The SQL dialect Storm writes. It decides how table and column names are quoted, which schema a
+		/// table without one is in, and how a DateTime parameter is typed. Default: SQL Server.
+		/// </summary>
+		/// <remarks>
+		/// The setting is global, because table names are written into SQL where no connection is known,
+		/// <see cref="MetaData.TypeAnalyzer.GetTableName{TEntity}"/> for instance. One process works with one dialect.
+		/// The command engine for insert, update and delete follows the connection and does not depend on it.
+		/// </remarks>
+		public static SqlDialect Dialect { get; set; }
 	}
 }

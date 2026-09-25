@@ -17,6 +17,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Eshava.Storm.Linq.Tests", "
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Eshava.Storm.Tests", "Eshava.Storm.Tests\Eshava.Storm.Tests.csproj", "{C33ABB1C-C949-46E7-89B6-56B7882390F0}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Eshava.Storm.IntegrationTests", "Eshava.Storm.IntegrationTests\Eshava.Storm.IntegrationTests.csproj", "{F210607E-CE38-412C-AC3A-AAC28BEE3814}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Eshava.Storm.PostgreSql", "Eshava.Storm.PostgreSql\Eshava.Storm.PostgreSql.csproj", "{7B9C4E21-5A3D-4F8E-9C1B-2D6E8F0A4B13}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -39,6 +43,14 @@ Global
 		{C33ABB1C-C949-46E7-89B6-56B7882390F0}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C33ABB1C-C949-46E7-89B6-56B7882390F0}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C33ABB1C-C949-46E7-89B6-56B7882390F0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F210607E-CE38-412C-AC3A-AAC28BEE3814}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F210607E-CE38-412C-AC3A-AAC28BEE3814}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F210607E-CE38-412C-AC3A-AAC28BEE3814}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F210607E-CE38-412C-AC3A-AAC28BEE3814}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7B9C4E21-5A3D-4F8E-9C1B-2D6E8F0A4B13}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7B9C4E21-5A3D-4F8E-9C1B-2D6E8F0A4B13}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7B9C4E21-5A3D-4F8E-9C1B-2D6E8F0A4B13}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7B9C4E21-5A3D-4F8E-9C1B-2D6E8F0A4B13}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

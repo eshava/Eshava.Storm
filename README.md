@@ -409,7 +409,53 @@ Eshava.Storm.Settings.EnableDateTimeHighAccuracy = false;
 /// All models must be explicitly registered by a DbConfiguration or by TypeAnalyzer.Register<>() to be used in the mapper.
 /// </summary>
 Eshava.Storm.Settings.RestrictToRegisteredModels = false;
+
+/// <summary>
+/// The SQL dialect Storm writes: SqlServer (default), Sqlite or PostgreSql.
+/// </summary>
+Eshava.Storm.Settings.Dialect = SqlDialect.SqlServer;
 ```
+
+## Dialects
+
+Storm writes SQL Server by default. Set the dialect once at the start of the application; it is global,
+because table names are also written into hand-written SQL, where no connection is known.
+
+```csharp
+Eshava.Storm.Settings.Dialect = SqlDialect.PostgreSql;
+```
+
+| | SQL Server | SQLite | PostgreSQL |
+|---|---|---|---|
+| Names | `[Items].[Name]` | like SQL Server | `"items"."name"` — lower case, quoted |
+| Table without schema | in `dbo` | — | in `public` |
+| Generated key | `SCOPE_IDENTITY()` | `last_insert_rowid()` | `INSERT … RETURNING` |
+| Empty list | `(SELECT NULL WHERE 1 = 0)` | like SQL Server | an empty array of the element type |
+| `DateTime` parameter | `DateTime` or `DateTime2` | like SQL Server | chosen by Npgsql from the kind: `timestamptz` for UTC |
+| `DateTimeOffset` parameter | as it is | as it is | converted to UTC — `timestamptz` stores the instant, not the offset |
+
+**PostgreSQL names are written in lower case.** PostgreSQL folds a name without quotes to lower case, so
+this matches tables created without quotes as well as hand-written SQL that does not quote, and still
+protects a name that is a reserved word. `TypeAnalyzer.GetTableName<Item>()` returns `"items"`.
+
+### Bulk insert on PostgreSQL
+
+The package [Eshava.Storm.PostgreSql](https://nuget.org/packages/Eshava.Storm.PostgreSql) adds
+`BulkInsertAsync` for `NpgsqlConnection`, the counterpart of the one for `SqlConnection`. It writes
+through binary `COPY` and needs the PostgreSQL dialect.
+
+```csharp
+Eshava.Storm.Settings.Dialect = SqlDialect.PostgreSql;
+
+await connection.BulkInsertAsync(shipments);
+await connection.BulkInsertAsync(shipments, "shipments_archive", transaction);
+```
+
+Binary `COPY` converts nothing on the server, so each value is written as the type of its column, which
+is read from the table first. A `DateTime` without kind goes into `timestamptz` as UTC.
+
+The command engine for insert, update and delete follows the connection — `SqlConnection`, a SQLite or
+an Npgsql connection, also inside a wrapping connection — and does not depend on the setting.
 
 # Storm.Linq
 Eshava.Storm.Linq - a extension to Eshava.Storm
@@ -501,6 +547,33 @@ So that the mapping looks like:
 ```csharp
 settings.PropertyTypeMappings.Add(typeof(Omega),"o");
 ```
+
+Dialects and case
+------------------------------------------------------------
+The conditions are written for SQL Server by default. `Eshava.Storm.Linq` does not reference
+`Eshava.Storm`, so it has settings of its own; set them once at the start of the application, next to
+`Eshava.Storm.Settings.Dialect`.
+
+```csharp
+LinqSettings.Dialect = QueryDialect.PostgreSql;
+LinqSettings.TranslateCaseConversion = null; // null: follow the dialect
+```
+
+**Wildcards in a search term are escaped**, so `Contains("50%")` finds the text `50%`: with brackets on
+SQL Server, with a backslash on PostgreSQL, and with a backslash and an `ESCAPE` clause on SQLite.
+
+**`ToLower()` and `ToUpper()` on a column** are ignored on SQL Server and SQLite, where the collation
+usually ignores case and a function on the column would keep an index from being used. PostgreSQL
+compares case-sensitively, so there they are translated:
+
+| Expression | PostgreSQL |
+|---|---|
+| `p.Name.ToLower() == "anna"` | `lower(Name) = @p0` |
+| `names.Contains(p.Name.ToLower())` | `lower(Name) IN @p0Array` |
+| `p.Name.ToLower().Contains("nn")` | `Name ILIKE @p0` |
+
+`TranslateCaseConversion` overrides the dialect: `true` translates on every dialect — `lower()` and
+`upper()`, and `lower(Name) LIKE` where there is no `ILIKE` — and `false` ignores the calls everywhere.
 
 Comming soon
 ------------------------------------------------------------

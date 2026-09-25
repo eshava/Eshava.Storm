@@ -14,13 +14,15 @@ namespace Eshava.Storm
 	{
 		private const string DEFAULT_CRUD_COMMAND_ENGINE_NAME = "sqlconnection";
 		private const string SQLITE_CRUD_COMMAND_ENGINE_NAME = "sqliteconnection";
+		private const string POSTGRESQL_CRUD_COMMAND_ENGINE_NAME = "npgsqlconnection";
 
 		private static readonly string[] _wrappedConnectionPropertyNames = new[] { "WrappedConnection", "InnerConnection", "UnderlyingConnection" };
 
 		private static readonly Dictionary<string, Func<Interfaces.IObjectGenerator, Interfaces.ICRUDCommandEngine>> _commandEngines = new Dictionary<string, Func<Interfaces.IObjectGenerator, Interfaces.ICRUDCommandEngine>>
 		{
 			{ DEFAULT_CRUD_COMMAND_ENGINE_NAME, objectGenerator => new SqlServerCRUDCommandEngine(objectGenerator) },
-			{ SQLITE_CRUD_COMMAND_ENGINE_NAME, objectGenerator => new SqliteCRUDCommandEngine(objectGenerator) }
+			{ SQLITE_CRUD_COMMAND_ENGINE_NAME, objectGenerator => new SqliteCRUDCommandEngine(objectGenerator) },
+			{ POSTGRESQL_CRUD_COMMAND_ENGINE_NAME, objectGenerator => new PostgreSqlCRUDCommandEngine(objectGenerator) }
 		};
 
 		public static Task<K> InsertAsync<T, K>(this IDbConnection connection, T entityToInsert, IDbTransaction transaction = null, int? commandTimeout = null, CancellationToken cancellationToken = default) where T : class
@@ -124,22 +126,30 @@ namespace Eshava.Storm
 
 		private static Interfaces.ICRUDCommandEngine GetCRUDCommandEngine(this IDbConnection connection, Interfaces.IObjectGenerator objectGenerator)
 		{
-			var engineName = IsSqliteConnection(connection) ? SQLITE_CRUD_COMMAND_ENGINE_NAME : DEFAULT_CRUD_COMMAND_ENGINE_NAME;
+			var engineName = DEFAULT_CRUD_COMMAND_ENGINE_NAME;
+			if (IsConnectionOf(connection, "npgsql"))
+			{
+				engineName = POSTGRESQL_CRUD_COMMAND_ENGINE_NAME;
+			}
+			else if (IsConnectionOf(connection, "sqlite"))
+			{
+				engineName = SQLITE_CRUD_COMMAND_ENGINE_NAME;
+			}
 
 			return _commandEngines[engineName](objectGenerator);
 		}
 
 		/// <summary>
-		/// Recognises SQLite by the type name of the connection or of the connection it wraps, as profilers do.
-		/// Every other connection is treated as SQL Server.
+		/// Recognises a provider by the type name of the connection or of the connection it wraps, as profilers do.
+		/// A connection no provider is recognised for is treated as SQL Server.
 		/// </summary>
-		private static bool IsSqliteConnection(IDbConnection connection)
+		private static bool IsConnectionOf(IDbConnection connection, string provider)
 		{
 			for (var depth = 0; connection != null && depth < 5; depth++)
 			{
 				var type = connection.GetType();
-				if (type.Name.IndexOf("sqlite", StringComparison.OrdinalIgnoreCase) >= 0
-					|| (type.Namespace?.IndexOf("sqlite", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0)
+				if (type.Name.IndexOf(provider, StringComparison.OrdinalIgnoreCase) >= 0
+					|| (type.Namespace?.IndexOf(provider, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0)
 				{
 					return true;
 				}
