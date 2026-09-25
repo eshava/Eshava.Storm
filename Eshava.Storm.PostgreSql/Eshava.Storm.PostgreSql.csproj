@@ -1,0 +1,44 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<LangVersion>latest</LangVersion>
+		<TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+		<PackageProjectUrl>https://github.com/eshava/storm</PackageProjectUrl>
+		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
+		<Company>Eshava</Company>
+		<Authors>Eshava</Authors>
+		<Description>PostgreSQL extensions for Eshava.Storm: the bulk insert through binary COPY</Description>
+		<PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
+		<Nullable>disable</Nullable>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<None Include="..\LICENSE.txt">
+			<Pack>True</Pack>
+			<PackagePath></PackagePath>
+		</None>
+		<None Include="..\README.md">
+			<Pack>True</Pack>
+			<PackagePath>\</PackagePath>
+		</None>
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Npgsql" Version="10.0.3" />
+	</ItemGroup>
+
+	<!--
+		During development the core is referenced as a project. When packing, the pack script sets
+		EshavaStormVersion, and the package then depends on the published Eshava.Storm of that version:
+		a project reference would take the version given for this package instead.
+	-->
+	<ItemGroup Condition="'$(EshavaStormVersion)' == ''">
+		<ProjectReference Include="..\Eshava.Storm\Eshava.Storm.csproj" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(EshavaStormVersion)' != ''">
+		<PackageReference Include="Eshava.Storm" Version="$(EshavaStormVersion)" />
+	</ItemGroup>
+
+</Project>

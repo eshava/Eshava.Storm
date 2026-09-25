@@ -438,6 +438,22 @@ Eshava.Storm.Settings.Dialect = SqlDialect.PostgreSql;
 this matches tables created without quotes as well as hand-written SQL that does not quote, and still
 protects a name that is a reserved word. `TypeAnalyzer.GetTableName<Item>()` returns `"items"`.
 
+### Bulk insert on PostgreSQL
+
+The package [Eshava.Storm.PostgreSql](https://nuget.org/packages/Eshava.Storm.PostgreSql) adds
+`BulkInsertAsync` for `NpgsqlConnection`, the counterpart of the one for `SqlConnection`. It writes
+through binary `COPY` and needs the PostgreSQL dialect.
+
+```csharp
+Eshava.Storm.Settings.Dialect = SqlDialect.PostgreSql;
+
+await connection.BulkInsertAsync(shipments);
+await connection.BulkInsertAsync(shipments, "shipments_archive", transaction);
+```
+
+Binary `COPY` converts nothing on the server, so each value is written as the type of its column, which
+is read from the table first. A `DateTime` without kind goes into `timestamptz` as UTC.
+
 The command engine for insert, update and delete follows the connection — `SqlConnection`, a SQLite or
 an Npgsql connection, also inside a wrapping connection — and does not depend on the setting.
 

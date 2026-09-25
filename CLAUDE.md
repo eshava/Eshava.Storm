@@ -1,7 +1,7 @@
 # Eshava.Storm — Repository Notes
 
 Object-relational mapper that extends `IDbConnection` with query and execute helpers. Published
-as two NuGet packages, **`Eshava.Storm`** and **`Eshava.Storm.Linq`**.
+as three NuGet packages, **`Eshava.Storm`**, **`Eshava.Storm.Linq`** and **`Eshava.Storm.PostgreSql`**.
 
 **Conventions:** documentation, code and commit messages are written in English. Line endings are
 pinned through `.gitattributes` — anything that may run on Linux must be checked out with LF.
@@ -12,6 +12,7 @@ pinned through `.gitattributes` — anything that may run on Linux must be check
 |---|---|
 | `Eshava.Storm` | The mapper itself — the `IDbConnection` extension methods, type handlers, mapping. |
 | `Eshava.Storm.Linq` | Expression-based query building on top of it. `netstandard2.0`. |
+| `Eshava.Storm.PostgreSql` | The bulk insert for PostgreSQL through binary `COPY`. A package of its own because it needs Npgsql, which nobody on SQL Server should have to carry. `net8.0` to `net10.0`, as Npgsql 10. |
 | `Eshava.Storm.Tests` · `Eshava.Storm.Linq.Tests` | MSTest with FluentAssertions. |
 | `Eshava.Storm.IntegrationTests` | Tests against a real PostgreSQL database — see below. |
 | `Eshava.Storm.TestApp` | Manual test application against a real database. |

@@ -4,6 +4,23 @@ Notable changes per released version of the packages of this repository, `Eshava
 `Eshava.Storm.Linq`, newest first. Versions before `Eshava.Storm` 1.0.42 and `Eshava.Storm.Linq` 1.0.15
 are not documented here — the Git history is the source for those.
 
+## Eshava.Storm.PostgreSql 1.0.0
+
+### Added
+
+* **The first version: `BulkInsertAsync` for `NpgsqlConnection`**, through binary
+  `COPY … FROM STDIN (FORMAT BINARY)` — the PostgreSQL counterpart of the bulk insert for
+  `SqlConnection`. It writes what `Eshava.Storm` prepares in `BulkInsertRows`, so type handlers, enums,
+  owned objects and generated keys behave as they do for an insert. Requires
+  `Settings.Dialect = SqlDialect.PostgreSql`.
+* **Values are written as the type of their column**, which is read from the table before the copy
+  starts. Binary COPY converts nothing on the server, and a value Npgsql refuses ends the connection:
+  * into `timestamp with time zone` a `DateTime` goes in UTC — a value without kind is taken as UTC,
+    a local one is converted — and a `DateTimeOffset` in UTC;
+  * into `timestamp without time zone` a `DateTime` goes as its wall clock time, without kind.
+* A connection opened by the bulk insert is closed again; a transaction has to belong to the
+  connection. `commandTimeout`, or `Settings.CommandTimeout`, applies to the copy.
+
 ## Eshava.Storm 1.1.0
 
 ### Added
@@ -27,6 +44,9 @@ are not documented here — the Git history is the source for those.
   as SQL Server accepts them: `FROM "Items" "i"` can be mapped through the alias `i`.
 * **A `DateTime` is read into a `DateTimeOffset` property**, as PostgreSQL returns `timestamptz`. A value
   without kind is taken as UTC.
+* **`BulkInsertRows`**, what a bulk insert writes independent of the provider: the table, its columns and
+  a row of values per entity, with type handlers applied, enums as their underlying type, owned objects
+  as their columns and the columns of a generated key left out. `Eshava.Storm.PostgreSql` builds on it.
 
 ### Changed
 

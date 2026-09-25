@@ -15,5 +15,6 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\Eshava.Storm\Eshava.Storm.csproj" />
+		<ProjectReference Include="..\Eshava.Storm.PostgreSql\Eshava.Storm.PostgreSql.csproj" />
 	</ItemGroup>
 </Project>
