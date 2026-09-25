@@ -27,82 +27,84 @@ namespace Eshava.Storm.Engines
 				throw new ArgumentException("At least one key column property must be defined.");
 			}
 
-			if (commandDefinition.Connection.State == ConnectionState.Closed)
+			var wasClosed = commandDefinition.Connection.State == ConnectionState.Closed;
+			if (wasClosed)
 			{
 				await commandDefinition.Connection.OpenAsync(commandDefinition.CancellationToken).ConfigureAwait(false);
 			}
 
-			var tableName = entityTypeResult.TableName;
-			if (!commandDefinition.TableName.IsNullOrEmpty())
+			try
 			{
-				tableName = commandDefinition.TableName;
-			}
-
-			var sqlBulkCopy = commandDefinition.Transaction == default
-				? new SqlBulkCopy(commandDefinition.Connection)
+				var tableName = entityTypeResult.TableName;
+				if (!commandDefinition.TableName.IsNullOrEmpty())
 				{
-					DestinationTableName = tableName
+					tableName = commandDefinition.TableName;
 				}
-				: new SqlBulkCopy(commandDefinition.Connection, SqlBulkCopyOptions.Default, commandDefinition.Transaction)
+
+				using var sqlBulkCopy = commandDefinition.Transaction == default
+					? new SqlBulkCopy(commandDefinition.Connection)
+					: new SqlBulkCopy(commandDefinition.Connection, SqlBulkCopyOptions.Default, commandDefinition.Transaction);
+
+				sqlBulkCopy.DestinationTableName = tableName;
+
+				var commandTimeout = commandDefinition.CommandTimeout ?? Settings.CommandTimeout;
+				if (commandTimeout.HasValue)
 				{
-					DestinationTableName = tableName
-				};
+					sqlBulkCopy.BulkCopyTimeout = commandTimeout.Value;
+				}
 
-			if (commandDefinition.CommandTimeout.HasValue)
-			{
-				sqlBulkCopy.BulkCopyTimeout = commandDefinition.CommandTimeout.Value;
-			}
-
-			var properties = GetProperties(new PropertyRequest
-			{
-				Type = type,
-				Entity = commandDefinition.Entities.First()
-			});
-
-			var dataTable = CreateDataTable(properties, sqlBulkCopy);
-
-			foreach (var entity in commandDefinition.Entities)
-			{
-				// Must be executed for all entities, because OwnsOne Properties can be filled or not filled
-				properties = GetProperties(new PropertyRequest
+				// Every entity has the same columns: an owned object that is not set contributes its columns as NULL
+				var properties = GetProperties(new PropertyRequest
 				{
 					Type = type,
-					Entity = entity
+					Entity = commandDefinition.Entities.First()
 				});
 
-				var row = dataTable.NewRow();
+				using var dataTable = CreateDataTable(properties, sqlBulkCopy);
 
-				foreach (var property in properties)
+				foreach (var entity in commandDefinition.Entities)
 				{
-					var columnName = property.Prefix.IsNullOrEmpty()
-						? property.ColumnName
-						: property.Prefix + property.ColumnName
-						;
-
-					if (property.TypeHandler == default)
+					properties = GetProperties(new PropertyRequest
 					{
-						row[columnName] = property.PropertyInfo.GetValue(property.Entity) ?? DBNull.Value;
+						Type = type,
+						Entity = entity
+					});
 
-						continue;
-					}
+					var row = dataTable.NewRow();
 
-					var cellValue = property.PropertyInfo.GetValue(property.Entity);
-					if (cellValue == null)
+					foreach (var property in properties)
 					{
-						row[columnName] = DBNull.Value;
-					}
-					else
-					{
+						var columnName = property.Prefix.IsNullOrEmpty()
+							? property.ColumnName
+							: property.Prefix + property.ColumnName
+							;
+
+						var cellValue = property.GetValue();
+						if (property.TypeHandler == default || cellValue == null)
+						{
+							row[columnName] = cellValue ?? DBNull.Value;
+
+							continue;
+						}
+
 						var sqlParameter = new SqlParameter();
 						property.TypeHandler.SetValue(sqlParameter, cellValue);
 						row[columnName] = sqlParameter.Value;
 					}
+
+					dataTable.Rows.Add(row);
 				}
 
-				dataTable.Rows.Add(row);
+				await sqlBulkCopy.WriteToServerAsync(dataTable, commandDefinition.CancellationToken).ConfigureAwait(false);
 			}
-
-			await sqlBulkCopy.WriteToServerAsync(dataTable, commandDefinition.CancellationToken);
+			finally
+			{
+				// A connection opened here is closed here, as for every other command
+				if (wasClosed)
+				{
+					commandDefinition.Connection.Close();
+				}
+			}
 		}
 
 		private DataTable CreateDataTable(IEnumerable<Property> properties, SqlBulkCopy sqlBulkCopy)

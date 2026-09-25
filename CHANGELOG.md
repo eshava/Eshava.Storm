@@ -40,6 +40,23 @@ documented here — the Git history is the source for those.
 * **Mapping is planned once per result instead of once per row.** Which column goes into which
   property, including owned objects, is worked out for the first row and reused; the analysis of a
   statement text is cached, and names are compared culture invariantly.
+* **A partial update or patch has to give every key column.** With a composite key such as
+  `(TenantId, Id)`, `UpdatePartialAsync<T>(new { Id = 5, Name = "x" })` updated the row with `Id` 5
+  in every tenant, and reported `false` although it had changed them. It now throws an
+  `ArgumentException` before anything is sent.
+* **An update without a column to set throws an `ArgumentException`**: a partial update that gives
+  only key columns, or a property name the entity does not have. It used to send `UPDATE ... SET
+  WHERE`, which failed with a syntax error.
+* **An owned object that is not set writes its columns as `NULL`.** An update with an owned object
+  set to `null` left its columns unchanged and reported success; an insert left them out.
+* **Update and delete report success when at least one row changed**, instead of exactly one. An
+  update through a list of keys changes several rows and reported `false`, and so did a table with
+  a trigger that changes rows as well.
+* **SQLite is recognised by the type name and namespace of the connection, and through a connection
+  that wraps it** in a `WrappedConnection`, `InnerConnection` or `UnderlyingConnection` property, as
+  profilers do. Every other connection is still treated as SQL Server.
+* **The bulk insert closes a connection it opened**, as every other command does, disposes its
+  `SqlBulkCopy`, and applies `Settings.CommandTimeout` when no timeout is given.
 
 ### Fixed
 
@@ -110,3 +127,9 @@ documented here — the Git history is the source for those.
   never matched, because table names carry their schema.
 * **A reader without a column schema is supported.** Such a reader throws from `GetSchemaTable`, which
   failed the query; the column types reported by `GetDataType` are now taken from the reader.
+* **A patch with a key property renamed through `[Column]`** no longer fails with *Sequence contains no
+  matching element*: the patch names its values by property, the lookup used the column name.
+* **Column names are quoted in the `WHERE` clause** of update, delete and query by id, as they already
+  were in `INSERT` and `SET`. A key column named with a reserved word, `[Column("Order")]`, could be
+  inserted but not updated, deleted or read. Parameter names are taken from property names, so a
+  column name with a blank no longer produces an invalid parameter.
