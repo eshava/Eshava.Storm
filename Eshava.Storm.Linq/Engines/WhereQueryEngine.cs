@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Text;
-using Eshava.Storm.Linq.Enums;
 using Eshava.Storm.Linq.Extensions;
 using Eshava.Storm.Linq.Models;
 
@@ -12,6 +11,9 @@ namespace Eshava.Storm.Linq.Engines
 	internal class WhereQueryEngine : AbstractQueryEngine
 	{
 		private const string SQL_WHERE = "WHERE";
+
+		// The clauses that follow WHERE; new conditions are inserted before the first of them
+		private static readonly string[] _clausesAfterWhere = new[] { "GROUP BY", "HAVING", "WINDOW", "ORDER BY", "OFFSET", "OPTION", "FOR XML", "FOR JSON", "FOR BROWSE" };
 
 		public WhereQueryResult AddWhereConditionsToQuery<T>(IEnumerable<Expression<Func<T, bool>>> queryConditions, string sqlQuery, WhereQuerySettings settings)
 		{
@@ -24,14 +26,33 @@ namespace Eshava.Storm.Linq.Engines
 				return whereQueryResult;
 			}
 
-			var existence = sqlQuery.CheckExistence(SQL_WHERE);
-			if (existence == Existence.Available)
+			var whereIndex = sqlQuery.LastIndexOfTopLevelKeyword(SQL_WHERE);
+			var searchStart = Math.Max(whereIndex, sqlQuery.LastIndexOfTopLevelKeyword("SELECT"));
+			var insertIndex = sqlQuery.IndexOfFirstTopLevelKeyword(_clausesAfterWhere, Math.Max(searchStart, 0));
+			if (insertIndex < 0)
 			{
-				whereQueryResult.Sql = String.Join(Environment.NewLine, sqlQuery, SQL_AND, whereQueryResult.Sql);
+				insertIndex = sqlQuery.Length;
+			}
+
+			var queryStart = sqlQuery.Substring(0, insertIndex).TrimEnd();
+			var queryEnd = sqlQuery.Substring(insertIndex);
+
+			if (whereIndex >= 0)
+			{
+				// AND binds tighter than OR: an existing condition with a top-level OR is enclosed, or the new
+				// conditions would apply to its last part only
+				var conditionStart = whereIndex + SQL_WHERE.Length;
+				var existingCondition = queryStart.Substring(conditionStart);
+				if (existingCondition.LastIndexOfTopLevelKeyword("OR") >= 0)
+				{
+					queryStart = $"{queryStart.Substring(0, conditionStart)} ({existingCondition.Trim()})";
+				}
+
+				whereQueryResult.Sql = String.Join(Environment.NewLine, queryStart, SQL_AND, whereQueryResult.Sql) + queryEnd;
 			}
 			else
 			{
-				whereQueryResult.Sql = String.Join(Environment.NewLine, sqlQuery, SQL_WHERE, whereQueryResult.Sql);
+				whereQueryResult.Sql = String.Join(Environment.NewLine, queryStart, SQL_WHERE, whereQueryResult.Sql) + queryEnd;
 			}
 
 			return whereQueryResult;
@@ -39,7 +60,12 @@ namespace Eshava.Storm.Linq.Engines
 
 		public WhereQueryResult CalculateWhereConditions<T>(IEnumerable<Expression<Func<T, bool>>> queryConditions, WhereQuerySettings settings)
 		{
-			var result = new WhereQueryResult(settings?.QueryParameter);
+			// A copy: the settings can be used for more than one query, and the parameters of one must not leak into the next
+			var queryParameter = settings?.QueryParameter == null
+				? new Dictionary<string, object>()
+				: new Dictionary<string, object>(settings.QueryParameter);
+
+			var result = new WhereQueryResult(queryParameter);
 
 			if (!(queryConditions?.Any() ?? false))
 			{
@@ -61,7 +87,7 @@ namespace Eshava.Storm.Linq.Engines
 					sql.AppendLine("AND");
 				}
 
-				sql.AppendLine(ProcessExpression(queryCondition.Body, data, null));
+				sql.AppendLine(ProcessCondition(queryCondition.Body, data));
 			}
 
 			result.Sql = sql.ToString();

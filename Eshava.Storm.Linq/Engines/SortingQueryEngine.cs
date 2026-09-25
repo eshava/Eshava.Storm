@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Eshava.Core.Linq.Models;
-using Eshava.Storm.Linq.Enums;
 using Eshava.Storm.Linq.Extensions;
 using Eshava.Storm.Linq.Models;
 
@@ -22,8 +21,7 @@ namespace Eshava.Storm.Linq.Engines
 
 			var orderBy = CalculateSortConditions(orderByConditions, settings);
 
-			var existence = sqlQuery.CheckExistence(SQL_ORDERBY);
-			if (existence == Existence.Available)
+			if (sqlQuery.LastIndexOfTopLevelKeyword(SQL_ORDERBY) >= 0)
 			{
 				orderBy = String.Join(Environment.NewLine, sqlQuery, ", ", orderBy);
 			}

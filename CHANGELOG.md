@@ -1,9 +1,58 @@
 # Changelog
 
-Notable changes per released version of `Eshava.Storm`, newest first. Versions before 1.0.42 are not
-documented here — the Git history is the source for those.
+Notable changes per released version of the two packages of this repository, `Eshava.Storm` and
+`Eshava.Storm.Linq`, newest first. Versions before `Eshava.Storm` 1.0.42 and `Eshava.Storm.Linq` 1.0.15
+are not documented here — the Git history is the source for those.
 
-## 1.0.42
+## Eshava.Storm.Linq 1.0.15
+
+### Changed
+
+* **New conditions are inserted where the `WHERE` clause ends**, before a `GROUP BY`, `HAVING`,
+  `ORDER BY`, `OFFSET`, `OPTION` or `FOR XML`/`FOR JSON` of the base query. They were appended at the
+  end of the query, behind such a clause, which produced invalid SQL. A query that ends with its
+  `WHERE` clause is extended exactly as before.
+* **An existing `WHERE` condition with a top-level `OR` is enclosed in parentheses** before the new
+  conditions are added. `WHERE IsDeleted = 0 OR IsArchived = 0` plus `x => x.TenantId == 1` became
+  `... OR IsArchived = 0 AND (TenantId = @p0)`, and since `AND` binds tighter than `OR` the tenant
+  condition applied to the second half only — rows of other tenants were returned.
+* **Every part of a condition that does not depend on the lambda parameter is evaluated once and
+  passed as a parameter**: a captured variable, a member of a captured object at any depth, a static
+  member such as `Guid.Empty` or `string.Empty`, and a call such as `DateTime.UtcNow.AddDays(-1)`.
+  A captured `bool` combined with `&&` or `||` becomes `(1 = 1)` or `(1 = 0)`.
+* **What cannot be translated throws a `NotSupportedException`** instead of producing wrong or
+  invalid SQL: a static method applied to a column, such as `Math.Abs(x.Balance)`, which was dropped
+  silently and compared the column itself; arithmetic on a column; a column searched for inside a
+  captured string, `search.Contains(x.Name)`; and `Any` over a column instead of a list of values.
+* **Wildcards in a search term are escaped.** `%`, `_` and `[` in the value of `Contains`,
+  `StartsWith` and `EndsWith` are matched as themselves, using the bracket syntax of SQL Server.
+  `Contains("_")` matched every row.
+* **The query parameters of the settings are copied, not changed.** The result holds them together
+  with the new parameters, as before, but the settings can be used for a second query, which failed
+  with a duplicate key, and generated names skip every name the given parameters already use.
+
+### Fixed
+
+* **`WHERE` and `ORDER BY` are recognised as keywords of the statement itself**: as whole words,
+  outside parentheses, string literals and quoted names. `SELECT SomewhereId FROM Items` got an
+  `AND` instead of a `WHERE`, and a `WHERE` of a subquery inside the `WHERE` clause made the query get
+  a second one.
+* **A captured object whose type is mapped in `PropertyTypeMappings` is a value, not a table.**
+  `x => x.Name == request.Model.Name` became `(i.Name = i.Name)` and returned nearly every row.
+* **`null` reached through a captured member is a test for `NULL`.** `x => x.Name == filter.Name`
+  with `filter.Name` being `null` became `Name = @p0` with a `NULL` parameter, which matches nothing.
+* **Both sides of a comparison are translated**: a column compared with a column, `r.Start < r.End`,
+  and a value or `null` on the left, `5 < r.Id` or `null == r.Name`. These produced invalid SQL.
+* **An empty list matches nothing**: `empty.Contains(x.Id)` and `empty.Any(...)` become `(1 = 0)`.
+  They produced invalid SQL.
+* **`Any` can use members of the item and pass the item to a method**, as in
+  `items.Any(i => i.Id == x.Id)` and `names.Any(n => x.Name.StartsWith(n))`. The first passed the
+  items themselves as values, the second failed with a `KeyNotFoundException`.
+* **A search term that is `null` throws an `ArgumentNullException`**, as `String.StartsWith(null)`
+  does, instead of a `NullReferenceException` from inside the translation.
+* **An enum constant based on `long` keeps its full range**, instead of overflowing through `Int32`.
+
+## Eshava.Storm 1.0.42
 
 ### Changed
 
