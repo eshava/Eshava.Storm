@@ -409,7 +409,37 @@ Eshava.Storm.Settings.EnableDateTimeHighAccuracy = false;
 /// All models must be explicitly registered by a DbConfiguration or by TypeAnalyzer.Register<>() to be used in the mapper.
 /// </summary>
 Eshava.Storm.Settings.RestrictToRegisteredModels = false;
+
+/// <summary>
+/// The SQL dialect Storm writes: SqlServer (default), Sqlite or PostgreSql.
+/// </summary>
+Eshava.Storm.Settings.Dialect = SqlDialect.SqlServer;
 ```
+
+## Dialects
+
+Storm writes SQL Server by default. Set the dialect once at the start of the application; it is global,
+because table names are also written into hand-written SQL, where no connection is known.
+
+```csharp
+Eshava.Storm.Settings.Dialect = SqlDialect.PostgreSql;
+```
+
+| | SQL Server | SQLite | PostgreSQL |
+|---|---|---|---|
+| Names | `[Items].[Name]` | like SQL Server | `"items"."name"` — lower case, quoted |
+| Table without schema | in `dbo` | — | in `public` |
+| Generated key | `SCOPE_IDENTITY()` | `last_insert_rowid()` | `INSERT … RETURNING` |
+| Empty list | `(SELECT NULL WHERE 1 = 0)` | like SQL Server | an empty array of the element type |
+| `DateTime` parameter | `DateTime` or `DateTime2` | like SQL Server | chosen by Npgsql from the kind: `timestamptz` for UTC |
+| `DateTimeOffset` parameter | as it is | as it is | converted to UTC — `timestamptz` stores the instant, not the offset |
+
+**PostgreSQL names are written in lower case.** PostgreSQL folds a name without quotes to lower case, so
+this matches tables created without quotes as well as hand-written SQL that does not quote, and still
+protects a name that is a reserved word. `TypeAnalyzer.GetTableName<Item>()` returns `"items"`.
+
+The command engine for insert, update and delete follows the connection — `SqlConnection`, a SQLite or
+an Npgsql connection, also inside a wrapping connection — and does not depend on the setting.
 
 # Storm.Linq
 Eshava.Storm.Linq - a extension to Eshava.Storm

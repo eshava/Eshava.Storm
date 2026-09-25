@@ -1,6 +1,8 @@
 ﻿using System;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
+using Eshava.Storm.Dialects;
+using Eshava.Storm.Extensions;
 using Eshava.Storm.MetaData.Enums;
 
 namespace Eshava.Storm.MetaData.Models
@@ -12,11 +14,25 @@ namespace Eshava.Storm.MetaData.Models
 
 		}
 
-		public string TableName { get; private set; }
+		/// <summary>
+		/// The schema as configured, without quotes; empty when the table is named without one
+		/// </summary>
+		public string Schema { get; private set; }
 
-		public void SetTableName(string tableName)
+		/// <summary>
+		/// The table as configured, without quotes
+		/// </summary>
+		public string Table { get; private set; }
+
+		/// <summary>
+		/// The table name as SQL, quoted in the current dialect
+		/// </summary>
+		public string TableName => Table.IsNullOrEmpty() ? null : SqlDialects.Current.QuoteTableName(Schema, Table);
+
+		public void SetTable(string schema, string table)
 		{
-			TableName = tableName;
+			Schema = schema;
+			Table = table;
 		}
 
 		public bool HasPrimaryKey()

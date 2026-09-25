@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
 using System.Reflection;
+using Eshava.Storm.Dialects;
 using Eshava.Storm.Extensions;
 using Eshava.Storm.MetaData.Builders;
 using Eshava.Storm.MetaData.Interfaces;
@@ -46,7 +47,9 @@ namespace Eshava.Storm.MetaData
 		/// <returns>Table name</returns>
 		public static string GetTableNameWithoutAnalysis<TEntity>() where TEntity : class
 		{
-			return GetTableName(typeof(TEntity));
+			(var schema, var table) = GetTableName(typeof(TEntity));
+
+			return SqlDialects.Current.QuoteTableName(schema, table);
 		}
 
 		public static string GetTableName<TEntity>() where TEntity : class
@@ -110,9 +113,10 @@ namespace Eshava.Storm.MetaData
 		{
 			AnalyzeType(entity);
 
-			if (entity.TableName.IsNullOrEmpty())
+			if (entity.Table.IsNullOrEmpty())
 			{
-				entity.SetTableName(GetTableName(entity.Type));
+				(var schema, var table) = GetTableName(entity.Type);
+				entity.SetTable(schema, table);
 			}
 
 			if (!entity.HasPrimaryKey())
@@ -236,31 +240,29 @@ namespace Eshava.Storm.MetaData
 			return Settings.DefaultKeyColumnValueGeneration;
 		}
 
-		private static string GetTableName(Type type)
+		/// <summary>
+		/// Schema and table from the Table attribute, or the table by name convention; both without quotes
+		/// </summary>
+		private static (string Schema, string Table) GetTableName(Type type)
 		{
 			var tableAttribute = type.GetCustomAttribute<TableAttribute>();
 
 			if (tableAttribute != default)
 			{
-				if (!tableAttribute.Schema.IsNullOrEmpty())
-				{
-					return $"[{tableAttribute.Schema}].[{tableAttribute.Name}]";
-				}
-
-				return $"[{tableAttribute.Name}]";
+				return (tableAttribute.Schema.IsNullOrEmpty() ? null : tableAttribute.Schema, tableAttribute.Name);
 			}
 
-			if (type.Name.ToLower().EndsWith("y"))
+			if (type.Name.ToLowerInvariant().EndsWith("y"))
 			{
-				return $"[{type.Name.Substring(0, type.Name.Length - 1)}ies]";
+				return (null, $"{type.Name.Substring(0, type.Name.Length - 1)}ies");
 			}
 
-			if (type.Name.ToLower().EndsWith("s") || type.Name.ToLower().EndsWith("x"))
+			if (type.Name.ToLowerInvariant().EndsWith("s") || type.Name.ToLowerInvariant().EndsWith("x"))
 			{
-				return $"[{type.Name}es]";
+				return (null, $"{type.Name}es");
 			}
 
-			return $"[{type.Name}s]";
+			return (null, $"{type.Name}s");
 		}
 
 		private static void DeterminePrimaryKeyByConvention(Entity entity)

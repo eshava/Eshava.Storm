@@ -23,14 +23,7 @@ namespace Eshava.Storm.MetaData.Builders
 
 		public EntityTypeBuilder<TEntity> ToTable(string tableName, string schema = null)
 		{
-			if (schema.IsNullOrEmpty())
-			{
-				_entity.SetTableName($"[{tableName}]");
-			}
-			else
-			{
-				_entity.SetTableName($"[{schema}].[{tableName}]");
-			}
+			_entity.SetTable(schema.IsNullOrEmpty() ? null : schema, tableName);
 
 			return this;
 		}

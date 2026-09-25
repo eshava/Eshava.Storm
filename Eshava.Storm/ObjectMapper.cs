@@ -5,6 +5,8 @@ using System.Data;
 using System.Data.Common;
 using System.Linq;
 using System.Text.RegularExpressions;
+using Eshava.Storm.Dialects;
+using Eshava.Storm.Enums;
 using Eshava.Storm.Extensions;
 using Eshava.Storm.Interfaces;
 using Eshava.Storm.MetaData;
@@ -20,8 +22,9 @@ namespace Eshava.Storm
 		private const string EXPRESSIONTABLENAME = "*";
 
 		// The analysis of a statement text depends on the text only, so it is shared by every reader of the same statement
-		private static readonly ConcurrentDictionary<string, (Dictionary<string, IList<string>> TableAliases, Dictionary<string, int> AliasOccurrences, string SqlQuery)> _textAnalysisCache
-			= new ConcurrentDictionary<string, (Dictionary<string, IList<string>> TableAliases, Dictionary<string, int> AliasOccurrences, string SqlQuery)>();
+		// The dialect is part of the key: it decides the default schema the analysis assumes
+		private static readonly ConcurrentDictionary<(SqlDialect Dialect, string Sql), (Dictionary<string, IList<string>> TableAliases, Dictionary<string, int> AliasOccurrences, string SqlQuery)> _textAnalysisCache
+			= new ConcurrentDictionary<(SqlDialect Dialect, string Sql), (Dictionary<string, IList<string>> TableAliases, Dictionary<string, int> AliasOccurrences, string SqlQuery)>();
 
 		private readonly DbDataReader _reader;
 		private readonly DataTypeMapper _dataTypeMapper;
@@ -360,13 +363,15 @@ namespace Eshava.Storm
 
 		private static (Dictionary<string, IList<string>> TableAliases, Dictionary<string, int> AliasOccurrences, string SqlQuery) GetTextAnalysis(string sql)
 		{
-			if (_textAnalysisCache.TryGetValue(sql, out var textAnalysis))
+			var cacheKey = (Settings.Dialect, sql);
+			if (_textAnalysisCache.TryGetValue(cacheKey, out var textAnalysis))
 			{
 				return textAnalysis;
 			}
 
-			var tableAliases = sql.GetTableAliases();
-			var aliasOccurrences = CalculateTableAliasUsage(sql, tableAliases);
+			var normalizedSql = sql.NormalizeQuotedIdentifiers();
+			var tableAliases = normalizedSql.GetTableAliases();
+			var aliasOccurrences = CalculateTableAliasUsage(normalizedSql, tableAliases);
 			textAnalysis = (tableAliases, aliasOccurrences.Occurrences, aliasOccurrences.SqlQuery);
 
 			// Bounded, since a statement text can contain values and the number of texts is not
@@ -375,7 +380,7 @@ namespace Eshava.Storm
 				_textAnalysisCache.Clear();
 			}
 
-			_textAnalysisCache.TryAdd(sql, textAnalysis);
+			_textAnalysisCache.TryAdd(cacheKey, textAnalysis);
 
 			return textAnalysis;
 		}
@@ -431,7 +436,7 @@ namespace Eshava.Storm
 				for (var columnOrdinal = 0; columnOrdinal < _reader.FieldCount; columnOrdinal++)
 				{
 					var columnName = _reader.GetName(columnOrdinal).ToLowerInvariant();
-					var columnCacheItem = new ColumnCacheItem(columnOrdinal, _reader.GetFieldType(columnOrdinal), columnName, EXPRESSIONTABLENAME, "dbo");
+					var columnCacheItem = new ColumnCacheItem(columnOrdinal, _reader.GetFieldType(columnOrdinal), columnName, EXPRESSIONTABLENAME, SqlDialects.Current.DefaultSchema);
 
 					if (columnCache.ContainsKey(columnName))
 					{
@@ -473,7 +478,7 @@ namespace Eshava.Storm
 
 					if (schemaName.IsNullOrEmpty())
 					{
-						schemaName = "dbo";
+						schemaName = SqlDialects.Current.DefaultSchema;
 					}
 
 					if (tableName.IsNullOrEmpty())
@@ -506,7 +511,7 @@ namespace Eshava.Storm
 
 				foreach (DataRow row in _schemaTable.Rows)
 				{
-					var schemaName = GetSchemaValue(row, "BaseSchemaName")?.ToString() ?? "dbo";
+					var schemaName = GetSchemaValue(row, "BaseSchemaName")?.ToString() ?? SqlDialects.Current.DefaultSchema;
 					resultTableNames.Add($"{schemaName}.{GetSchemaValue(row, "BaseTableName")}");
 				}
 			}

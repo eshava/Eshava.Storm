@@ -1,8 +1,37 @@
 # Changelog
 
-Notable changes per released version of the two packages of this repository, `Eshava.Storm` and
+Notable changes per released version of the packages of this repository, `Eshava.Storm` and
 `Eshava.Storm.Linq`, newest first. Versions before `Eshava.Storm` 1.0.42 and `Eshava.Storm.Linq` 1.0.15
 are not documented here — the Git history is the source for those.
+
+## Eshava.Storm 1.1.0
+
+### Added
+
+* **PostgreSQL as a dialect.** `Settings.Dialect` chooses the SQL Storm writes — `SqlServer`, the
+  default, `Sqlite` or `PostgreSql`. For PostgreSQL:
+  * names are written in lower case and quoted, `"items"."name"`, which matches tables created
+    without quotes and hand-written SQL that does not quote;
+  * a table named without schema is in `public`, so the object mapper matches the schema the reader
+    reports;
+  * a generated key is returned by the insert itself, `INSERT … RETURNING`, through a new command
+    engine chosen for an Npgsql connection;
+  * an empty list becomes an empty array of the element type, because PostgreSQL types the `NULL` of
+    the generic empty set as `text`;
+  * a `DateTime` parameter is typed by Npgsql from its kind — `timestamptz` for UTC — and a
+    `DateTimeOffset` is passed in UTC, since `timestamptz` stores the instant, not the offset.
+
+  **Nothing changes for SQL Server and SQLite.** The statements are the same, character for character,
+  which a test pins against the output of 1.0.42.
+* **Names quoted with double quotes are recognised by the object mapper**, as PostgreSQL writes them and
+  as SQL Server accepts them: `FROM "Items" "i"` can be mapped through the alias `i`.
+* **A `DateTime` is read into a `DateTimeOffset` property**, as PostgreSQL returns `timestamptz`. A value
+  without kind is taken as UTC.
+
+### Changed
+
+* **Table names are stored without quotes** and quoted when SQL is written, in the dialect of the moment.
+  `TypeAnalyzer.GetTableName<T>()` returns the same text as before for SQL Server.
 
 ## Eshava.Storm.Linq 1.0.15
 

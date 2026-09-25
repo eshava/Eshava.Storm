@@ -7,7 +7,7 @@ namespace Eshava.Storm.Tests.Infrastructure
 	/// A connection that executes nothing and keeps the last command, so the parameters Storm created can be inspected.
 	/// The commands create real SqlParameter instances, which is what Storm meets in production.
 	/// </summary>
-	internal sealed class RecordingConnection : DbConnection
+	internal class RecordingConnection : DbConnection
 	{
 		public RecordingCommand LastCommand { get; private set; }
 

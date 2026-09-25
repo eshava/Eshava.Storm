@@ -5,6 +5,8 @@ using System.Data;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Eshava.Storm.Constants;
+using Eshava.Storm.Dialects;
+using Eshava.Storm.Enums;
 using Eshava.Storm.Extensions;
 using Eshava.Storm.Interfaces;
 using Eshava.Storm.Models;
@@ -138,7 +140,7 @@ namespace Eshava.Storm
 
 			if (handler == null)
 			{
-				dataParameter.Value = parameter.Value.SanitizeParameterValue();
+				dataParameter.Value = SqlDialects.Current.ConvertParameterValue(parameter.Value.SanitizeParameterValue());
 				if (dbType != null && dataParameter.DbType != dbType)
 				{
 					dataParameter.DbType = dbType.Value;
@@ -197,9 +199,40 @@ namespace Eshava.Storm
 			// An empty list is an empty set: IN matches nothing, NOT IN everything
 			var replacement = parameterNames.Count > 0
 				? $"({String.Join(",", parameterNames.Select(name => "@" + name))})"
-				: EMPTYSET;
+				: GetEmptySet(parameterName, parameter.Value.GetType(), command);
 
 			command.CommandText = GetParameterTokenRegex(parameterName).Replace(command.CommandText, replacement.Replace("$", "$$"));
+		}
+
+		/// <summary>
+		/// PostgreSQL types the NULL of the generic empty set as text, which cannot be compared with a column of
+		/// another type. There the empty set is an empty array of the element type instead.
+		/// </summary>
+		private static string GetEmptySet(string parameterName, Type listType, IDbCommand command)
+		{
+			if (Settings.Dialect != SqlDialect.PostgreSql)
+			{
+				return EMPTYSET;
+			}
+
+			var elementType = listType.GetDataTypeFromIEnumerable().GetDataType();
+			if (elementType.IsEnum)
+			{
+				elementType = Enum.GetUnderlyingType(elementType);
+			}
+
+			if (elementType.HasTypeHandler() || elementType == typeof(object))
+			{
+				// Without a known element type there is no array type to name
+				return EMPTYSET;
+			}
+
+			var emptyArrayParameter = command.CreateParameter();
+			emptyArrayParameter.ParameterName = $"{parameterName}_empty";
+			emptyArrayParameter.Value = Array.CreateInstance(elementType, 0);
+			command.Parameters.Add(emptyArrayParameter);
+
+			return $"(SELECT unnest(@{emptyArrayParameter.ParameterName}))";
 		}
 
 		/// <summary>
